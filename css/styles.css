@@ -116,6 +116,9 @@ a { color: var(--accent); }
 .swatch { width: 18px; height: 4px; border-radius: 2px; display: inline-block; }
 .swatch.walk { border-top: 2px dashed #555; height: 0; border-radius: 0; }
 .swatch.walk.long { border-top-color: #c62828; }
+.ok-card { border-color: var(--done); }
+.ok-card ul { margin: .3rem 0; padding-left: 1.2rem; font-size: .9rem; }
+.leg-route .when { font-weight: 600; }
 .warn-card { border-color: var(--risk); background: var(--risk-bg); }
 .warn-card ul { margin: .3rem 0; padding-left: 1.2rem; font-size: .9rem; }
 .warn-line { color: var(--risk); font-size: .85rem; font-weight: 600; margin: 2px 0 0; }

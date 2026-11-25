@@ -4,6 +4,7 @@ Ride every San Francisco Muni line in one day, ending at Bus Stop on Union Stree
 
 A small, no-build web app (Leaflet is loaded from a CDN for the map) with the full itinerary and a progress tracker:
 
+- **A real, timed plan**: every line's board and alight stop is a real SFMTA stop (with a live-arrivals link), with scheduled weekday departure times, and every walk between lines is under ~5 blocks.
 - **Interactive map** (Leaflet + OpenStreetMap): every leg numbered and colored by time block, walking transfers dashed, ridden lines grayed out, the next line highlighted. Tap a line to mark it ridden; tap 📍 on any leg to jump to it. Side-by-side on desktop, List/Map tabs on phones.
 - **Check off lines as you ride.** Progress is saved in your browser (localStorage).
 - **Options** for Owl lines (overnight), the 78X (Chase Center event days only) and the 714 BART Early Bird. The line count updates to match: 50 / 51 / 55 / 56.
@@ -26,21 +27,28 @@ Then open http://localhost:8000. (Opening `index.html` directly also works, just
 Pushing to `main` deploys to GitHub Pages via `.github/workflows/pages.yml`.
 One-time setup: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 
-## Editing the route
+## How the plan is made
 
-All itinerary content lives in [`js/data.js`](js/data.js): time blocks (with map colors), legs (board / alight / next transfer, plus `from`/`to` coordinates for the map), risk flags and optional legs. Progress is keyed by line name, so reordering legs keeps people's check-offs.
+The itinerary is generated from SFMTA's GTFS schedule data, not written by hand.
 
-After changing legs, rebuild the real stop/route geometry from SFMTA's GTFS feed
-(download it from https://www.sfmta.com/reports/gtfs-transit-data — requires accepting their license):
+- [`js/data.js`](js/data.js) lists **which** lines to ride, plus notes, risk flags and options.
+- [`scripts/plan.py`](scripts/plan.py) reads the GTFS feed and, for every line, considers every real
+  stop pair where the ride is at least ~3 blocks. It picks stops that keep every walk between lines
+  under ~5 blocks (450 m straight-line), searches for the line order that gets you to the finish
+  soonest using the real weekday timetable, and writes [`js/plan.js`](js/plan.js) (order, stops,
+  scheduled times and map paths).
+
+To re-plan (e.g. after SFMTA changes service), download the feed from
+https://www.sfmta.com/reports/gtfs-transit-data (requires accepting SFMTA's license) and run:
 
 ```sh
-python scripts/build_geo.py path/to/muni_gtfs-current.zip
+pip install numpy
+python scripts/plan.py path/to/muni_gtfs-current.zip --iters 25000 --restarts 4
 ```
 
-This writes `js/geo.js` and prints how far each leg's planned board/alight points are from the nearest
-real stop on that line. The app flags legs over 250 m off and transfers over ~650 m (≈5 blocks).
-
-After changing files, bump `CACHE` in [`sw.js`](sw.js) so installed copies pick up the update.
+It prints the full day and any walks over the limit. Progress in the app is keyed by line name, so
+re-planning keeps people's check-offs. After changing files, bump `CACHE` in [`sw.js`](sw.js) so
+installed copies pick up the update.
 
 ## Rules
 
