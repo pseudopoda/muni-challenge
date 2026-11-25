@@ -106,6 +106,7 @@ window.MUNI_DATA = {
   caveats: [
     "Times come from SFMTA's scheduled weekday timetable, not live predictions. Buses run late; use the live-arrival links on each stop and adjust as you go.",
     "The real risk is the low-frequency lines flagged ⚠ (58, 36, 37, 67, 56). Miss one and you can lose 20–30 minutes.",
-    "Walk limits are checked as straight-line distance (~450 m ≈ 5 blocks); actual street routes can be a bit longer, especially on hills.",
+    "The 5-block limit is checked both in a straight line (≤ 450 m) and along the streets (≤ ~600 m on foot, via OpenStreetMap), so no transfer hides a detour around a freeway or hill. Hills' steepness isn't accounted for.",
+    "Every connection has a few minutes of buffer built in (more before the ⚠ lines), so the day is longer than a zero-slack plan but much harder to derail.",
   ],
 };

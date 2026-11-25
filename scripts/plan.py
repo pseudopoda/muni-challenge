@@ -14,6 +14,10 @@ What it does
   * It searches over the order of lines (local search) to minimise the time you
     arrive at the finish, using the real weekday timetable for each ride — so waits
     for infrequent lines and service hours are accounted for.
+  * Every transfer leaves at least BUFFER_S (RISK_BUFFER_S for the infrequent lines)
+    between reaching the stop and the bus being due, so one late bus doesn't sink the day.
+  * Each leg also lists the other departures around the planned one, so the app can
+    show "missed it? next one at…".
   * Walks between lines over WALK_LIMIT_M (≈5 blocks, straight line) are penalised
     heavily and reported.
 
@@ -49,6 +53,11 @@ WALK_SPEED = 75 / 1.25     # m/min of straight-line distance (75 m/min with 25% 
 DAY_START = 6 * 3600 + 45 * 60  # be at the first stop by 6:45 (cable cars start ~7)
 OWL_START = 25 * 3600      # Owl block starts at 1:00 AM (GTFS writes after-midnight trips as 25:00)
 DAY_HOURS = (6 * 3600, 22 * 3600)
+BUFFER_S = 3 * 60          # be at the stop at least this long before the bus is due…
+RISK_BUFFER_S = 5 * 60     # …and longer for the infrequent lines, where a miss costs the most
+ALT_BEFORE_S = 30 * 60     # backup departures listed per leg: from 30 min before the plan…
+ALT_AFTER_S = 120 * 60     # …to 2 h after it
+ALT_MAX = 10
 FINISH = (37.79796, -122.43098)  # Bus Stop bar, 1901 Union St (Union & Laguna)
 
 ROUTE_OF = {
@@ -96,6 +105,28 @@ def meters(a, b):
     return math.hypot((b[1] - a[1]) * 111320 * math.cos(lat), (b[0] - a[0]) * 110540)
 
 
+# Street distances found by scripts/walks.py, as straight-line equivalents (street ≈ 1.25 × straight),
+# so walks that look short but go around a freeway or hill are judged by their real length.
+WALK_CACHE_FILE = ROOT / "scripts" / "walk_cache.json"
+STREET_FACTOR = 1.25
+_STREET = {}
+if WALK_CACHE_FILE.exists():
+    for k, v in json.loads(WALK_CACHE_FILE.read_text(encoding="utf-8")).items():
+        a, b = k.split("|")
+        _STREET[(a, b)] = v / STREET_FACTOR
+
+
+def ll_key(p):
+    return f"{p[0]:.6f},{p[1]:.6f}"
+
+
+def walk_m(a, b):
+    """Straight-line metres, or the street-equivalent when walks.py has measured this pair."""
+    if a is None or b is None:
+        return 0
+    return max(meters(a, b), _STREET.get((ll_key(a), ll_key(b)), 0))
+
+
 def secs(hms):
     h, m, s = (int(x) for x in hms.split(":"))
     return h * 3600 + m * 60 + s
@@ -122,6 +153,12 @@ def read_lines():
         opt = re.search(r'option: "(\w+)"', m.group(2))
         out.append((m.group(1), opt.group(1) if opt else None))
     return out
+
+
+def read_risky():
+    """Names of lines marked `risk: true` in data.js."""
+    text = DATA_JS.read_text(encoding="utf-8")
+    return {m.group(1) for m in re.finditer(r'\{ line: "([^"]+)"[^}]*risk: true', text)}
 
 
 def route_short(line):
@@ -216,8 +253,9 @@ class Feed:
 # Per-line candidate stops and ride matrices
 
 class Line:
-    def __init__(self, feed, name, option):
+    def __init__(self, feed, name, option, risky=False):
         self.name, self.option = name, option
+        self.buffer = RISK_BUFFER_S if risky else BUFFER_S
         self.short = route_short(name)
         self.route = feed.route_id(self.short)
         self.round_trip = self.short in ROUND_TRIP
@@ -274,6 +312,46 @@ class Line:
         self.ll = np.array([feed.stops[s]["ll"] for s in stop_ids])
 
 
+def round_trip_ride(f, ln, bid, sid, t):
+    """Out to the island from bid and back to sid, leaving at/after t: (out ride, back ride) or None."""
+    out = None
+    for pat, (tid, _) in f.patterns[ln.route].items():
+        seq = f.trip_stops[tid]
+        if bid in pat[:-1]:
+            r = f.next_ride(ln.route, bid, seq[-1][1], t)
+            if r and (out is None or r[1] < out[1]):
+                out = r
+    if not out:
+        return None
+    far = f.trip_stops[out[2]][-1]
+    back = None
+    for pat, (tid, _) in f.patterns[ln.route].items():
+        seq = f.trip_stops[tid]
+        if sid in pat[1:] and meters(f.stops[seq[0][1]]["ll"], f.stops[far[1]]["ll"]) < 400:
+            r = f.next_ride(ln.route, seq[0][1], sid, out[1] + 120)
+            if r and (back is None or r[1] < back[1]):
+                back = r
+    return (out, back) if back else None
+
+
+def alternatives(f, ln, bid, sid, dep):
+    """Other weekday departures for this leg around the planned one: [(dep, arr)] in seconds."""
+    alts, t = [], dep - ALT_BEFORE_S
+    while len(alts) < ALT_MAX and t <= dep + ALT_AFTER_S:
+        if ln.round_trip:
+            rt = round_trip_ride(f, ln, bid, sid, t)
+            r = (rt[0][0], rt[1][1]) if rt else None
+        else:
+            r = f.next_ride(ln.route, bid, sid, t)
+            r = r[:2] if r else None
+        if not r or r[0] > dep + ALT_AFTER_S:
+            break
+        if not alts or alts[-1][0] != r[0]:
+            alts.append((r[0], r[1]))
+        t = r[0] + 1
+    return alts
+
+
 def walk_matrix(A, B):
     """Straight-line meters between every stop of line A (rows) and line B (cols)."""
     la = np.radians((A.ll[:, None, 0] + B.ll[None, :, 0]) / 2)
@@ -298,7 +376,15 @@ class Planner:
     def W(self, a, b):
         key = (a.name, b.name)
         if key not in self._w:
-            self._w[key] = walk_cost(walk_matrix(a, b))
+            M = walk_matrix(a, b)
+            if _STREET:
+                ia = {ll_key(p): i for i, p in enumerate(a.ll)}
+                ib = {ll_key(p): j for j, p in enumerate(b.ll)}
+                for (ka, kb), m in _STREET.items():
+                    i, j = ia.get(ka), ib.get(kb)
+                    if i is not None and j is not None:
+                        M[i, j] = max(M[i, j], m)
+            self._w[key] = walk_cost(M)
         return self._w[key]
 
     def choose_stops(self, order):
@@ -349,39 +435,26 @@ class Planner:
             ln = self.lines[k]
             bid, sid = ln.stop_ids[b], ln.stop_ids[s]
             bll, sll = f.stops[bid]["ll"], f.stops[sid]["ll"]
-            walk = meters(prev_ll, bll) if prev_ll else 0
+            walk = walk_m(prev_ll, bll) if prev_ll else 0
             if prev_ll and legs and walk > WALK_LIMIT_M:
                 penalty += 30 * 60 + (walk - WALK_LIMIT_M) * 30
             t += walk / WALK_SPEED * 60 if legs else 0
+            # Plan to be at the stop a few minutes early (not before the very first ride).
+            ready = t + (ln.buffer if legs else 0)
             if ln.round_trip:
-                out = None
-                for pat, (tid, _) in f.patterns[ln.route].items():
-                    seq = f.trip_stops[tid]
-                    if bid in pat[:-1]:
-                        r = f.next_ride(ln.route, bid, seq[-1][1], t)
-                        if r and (out is None or r[1] < out[1]):
-                            out = r
-                if not out:
+                rt = round_trip_ride(f, ln, bid, sid, ready)
+                if not rt:
                     return None  # 25 runs all day; treat as a hard failure
-                far = f.trip_stops[out[2]][-1]
-                back = None
-                for pat, (tid, _) in f.patterns[ln.route].items():
-                    seq = f.trip_stops[tid]
-                    if sid in pat[1:] and meters(f.stops[seq[0][1]]["ll"], f.stops[far[1]]["ll"]) < 400:
-                        r = f.next_ride(ln.route, seq[0][1], sid, out[1] + 120)
-                        if r and (back is None or r[1] < back[1]):
-                            back = r
-                if not back:
-                    return None
+                out, back = rt
                 dep, arr = out[0], back[1]
                 path = f.path(out[2], out[3], out[4]) + f.path(back[2], back[3], back[4])
                 stops_n = (out[4] - out[3]) + (back[4] - back[3])
             else:
-                r = f.next_ride(ln.route, bid, sid, t)
+                r = f.next_ride(ln.route, bid, sid, ready)
                 if not r:
                     # Not running at this hour: big penalty, but keep going so the search can recover.
                     penalty += 3 * 3600
-                    dep, arr = t + 1800, t + 1800 + float(ln.R[b, s]) * 60
+                    dep, arr = ready + 1800, ready + 1800 + float(ln.R[b, s]) * 60
                     path, stops_n = [bll, sll], 0
                 else:
                     dep, arr, tid, i, j = r
@@ -390,7 +463,7 @@ class Planner:
             legs.append({"k": k, "board": bid, "alight": sid, "walk": walk, "arrive_stop": t, "dep": dep, "arr": arr, "path": path, "stops": stops_n})
             t = arr
             prev_ll = sll
-        end_walk = meters(prev_ll, self.end_ll) if self.end_ll else 0
+        end_walk = walk_m(prev_ll, self.end_ll) if self.end_ll else 0
         if end_walk > WALK_LIMIT_M:
             penalty += 30 * 60 + (end_walk - WALK_LIMIT_M) * 30
         t += end_walk / WALK_SPEED * 60
@@ -405,13 +478,13 @@ class Planner:
         return end + penalty, (choice, legs, end, end_walk)
 
 
-def search(planner, order, fixed_prefix, iters, rng, label):
+def search(planner, order, fixed_prefix, iters, rng, label, temp_min=20):
     """Local search over line order (relocate / swap / reverse), keeping the prefix group first."""
     best_cost, best_info = planner.evaluate(order)
     cur, cur_cost = order[:], best_cost
     best = order[:]
     n, p = len(order), fixed_prefix
-    temp0 = 20 * 60
+    temp0 = temp_min * 60
     for it in range(iters):
         cand = cur[:]
         move = rng.random()
@@ -464,6 +537,10 @@ def build_block(feed, planner, order, info, bid, color, option=None, title=None,
             "depart": clock(leg["dep"]),
             "arrive": clock(leg["arr"]),
             "t_depart": leg["dep"],
+            # Minutes after midnight (can pass 1440 for after-midnight Owl trips), for the live view.
+            "dep_min": round(leg["dep"] / 60),
+            "arr_min": round(leg["arr"] / 60),
+            "alts": [[round(d / 60), round(a / 60)] for d, a in alternatives(feed, ln, leg["board"], leg["alight"], leg["dep"])],
             "wait_min": max(0, round((leg["dep"] - leg["arrive_stop"]) / 60)),
             "ride_min": round((leg["arr"] - leg["dep"]) / 60),
             "stops": leg["stops"],
@@ -495,12 +572,15 @@ def main():
     ap.add_argument("--iters", type=int, default=20000)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--restarts", type=int, default=1, help="independent searches; keep the best")
+    ap.add_argument("--warm", help="start the first search from the day order in an existing plan.js")
+    ap.add_argument("--temp", type=float, default=20, help="annealing start temperature in minutes (lower = polish)")
     args = ap.parse_args()
     rng = random.Random(args.seed)
 
     all_lines = read_lines()
     feed = Feed(args.gtfs, {route_short(n) for n, _ in all_lines})
-    lines = [Line(feed, n, o) for n, o in all_lines]
+    risky = read_risky()
+    lines = [Line(feed, n, o, n in risky) for n, o in all_lines]
     missing = [ln for ln in lines if not ln.route]
     for ln in missing:
         print(f"  ! {ln.name}: not in this feed — skipped by the planner")
@@ -532,12 +612,18 @@ def main():
     first = [k for k, ln in enumerate(day) if ln.short in FIRST_LINES]
     rest = [k for k in range(len(day)) if k not in first]
     order = first + rest
+    if args.warm:
+        prev = json.loads(Path(args.warm).read_text(encoding="utf-8").split("window.MUNI_PLAN = ", 1)[1].rstrip().rstrip(";"))
+        names = [l["line"] for b in prev["blocks"] if b["id"] != "owl" for l in b["legs"]]
+        pos = {ln.name: k for k, ln in enumerate(day)}
+        warm = [pos[n] for n in names if n in pos and pos[n] in rest]
+        order = first + warm + [k for k in rest if k not in warm]
     start_ll = feed.stops[day[first[0]].stop_ids[0]]["ll"] if first else None
     planner = Planner(feed, day, start_ll=(37.78485, -122.40776), end_ll=FINISH, start_time=DAY_START)
     best_c, best_order, best_info = math.inf, None, None
     for r in range(args.restarts):
-        start = first + rng.sample(rest, len(rest)) if r else order
-        o, inf_ = search(planner, start, len(first), args.iters, random.Random(args.seed + r), f"day {r + 1}")
+        start = first + rng.sample(rest, len(rest)) if r and not args.warm else order
+        o, inf_ = search(planner, start, len(first), args.iters, random.Random(args.seed + r), f"day {r + 1}", args.temp)
         c, _ = planner.evaluate(o)
         if c < best_c:
             best_c, best_order, best_info = c, o, inf_

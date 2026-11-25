@@ -6,8 +6,11 @@
  *   network – the whole of every line (js/network.js), faint, in its section's colour
  *   walks   – dashed transfers between lines (red when over the walk limit)
  *   legs    – the part of each line you actually ride
- *   markers – numbered boarding points and the 🍻 finish
+ *   legs    – (above) the part of each line you actually ride
+ *   nav     – dotted walking route from your location (🚶 directions)
+ *   markers – numbered boarding points, the 🍻 finish and your location
  * Tap a section in the legend to show just that part of the day.
+ * saveOffline() stores the San Francisco basemap in the Cache API for use underground.
  */
 (function () {
   "use strict";
@@ -29,6 +32,16 @@
   let markers = [];
   let popup = null;
   let prefs = loadPrefs();
+
+  // Location and walking directions.
+  const ROUTER = "https://routing.openstreetmap.de/routed-foot/route/v1/foot/";
+  const MAP_CACHE = "muni-map-v1"; // shared with sw.js
+  let me = null;              // { ll: [lat, lon], acc }
+  let meMarker = null;
+  let watchId = null;
+  let follow = false;         // keep the camera on you while navigating
+  let nav = null;             // { to, name, line, depMin, route: [[lat, lon]], from, at, fetching }
+  let banner = null;
 
   function loadPrefs() {
     try { return Object.assign({ network: true }, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}")); }
@@ -71,6 +84,12 @@
     map.touchZoomRotate.disableRotation();
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.addControl(new FitControl(), "top-right");
+    map.addControl(new LocateControl(), "top-right");
+    banner = document.createElement("div");
+    banner.className = "nav-banner";
+    banner.hidden = true;
+    el.parentElement.append(banner);
+    map.on("dragstart", () => { if (nav && follow) { follow = false; renderBanner(); } });
 
     // Treat the basemap as unreachable only after repeated errors and no successful load.
     let loaded = false, errors = 0;
@@ -114,11 +133,31 @@
       const div = document.createElement("div");
       div.className = "maplibregl-ctrl maplibregl-ctrl-group";
       div.innerHTML = '<button type="button" class="fit-btn" title="Show the whole day" aria-label="Show the whole day">⤢</button>';
-      div.firstChild.addEventListener("click", () => { setFocusBlock(null); fitAll(true); });
+      div.firstChild.addEventListener("click", () => {
+        if (nav && follow) { follow = false; renderBanner(); }
+        setFocusBlock(null);
+        fitAll(true);
+      });
       return div;
     }
     onRemove() {}
   }
+
+  class LocateControl {
+    onAdd() {
+      const div = document.createElement("div");
+      div.className = "maplibregl-ctrl maplibregl-ctrl-group";
+      div.innerHTML = '<button type="button" class="locate-btn" title="Show my location" aria-label="Show my location">◎</button>';
+      div.firstChild.addEventListener("click", () => {
+        startWatching();
+        if (me) map.easeTo({ center: lngLat(me.ll), zoom: Math.max(map.getZoom(), 15.5) });
+        else pendingCenter = true;
+      });
+      return div;
+    }
+    onRemove() {}
+  }
+  let pendingCenter = false;
 
   // Zoom must be the outermost expression, so the next-leg choice goes inside each stop.
   const LINE_WIDTH = (base, nextBase) => {
@@ -171,6 +210,19 @@
     // Wide invisible line so thin routes are easy to tap; whole lines are tappable too.
     map.addLayer({ id: "hit", type: "line", source: "legs", paint: { "line-color": "#000", "line-width": 20, "line-opacity": 0 } });
     map.addLayer({ id: "hit-network", type: "line", source: "network", paint: { "line-color": "#000", "line-width": 14, "line-opacity": 0 } }, "walks");
+
+    // Walking directions: Google-Maps-style blue dots.
+    map.addSource("nav", { type: "geojson", data: empty });
+    map.addLayer({
+      id: "nav-casing", type: "line", source: "nav",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffffff", "line-width": LINE_WIDTH(9), "line-dasharray": [0, 1.6] },
+    });
+    map.addLayer({
+      id: "nav", type: "line", source: "nav",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#1a73e8", "line-width": LINE_WIDTH(6), "line-dasharray": [0, 2.1] },
+    });
     ready = true;
   }
 
@@ -209,14 +261,16 @@
 
       const prev = items[i - 1];
       if (prev && it.walk != null && it.walk > 25) {
-        walks.push({ type: "Feature", properties: { long: !!it.longWalk, dim }, geometry: { type: "LineString", coordinates: [lngLat(prev.b), lngLat(it.a)] } });
+        const path = (it.walkIn && it.walkIn.path) || [prev.b, it.a];
+        walks.push({ type: "Feature", properties: { long: !!it.longWalk, dim }, geometry: { type: "LineString", coordinates: path.map(lngLat) } });
       }
     });
 
     if (finish) {
       const last = [...items].reverse().find((l) => l.block !== "owl");
       if (last && !last.leg.manual) {
-        walks.push({ type: "Feature", properties: { long: false, dim: dimmed(last.block) }, geometry: { type: "LineString", coordinates: [lngLat(last.b), lngLat(finish.at)] } });
+        const path = finish.path || [last.b, finish.at];
+        walks.push({ type: "Feature", properties: { long: false, dim: dimmed(last.block) }, geometry: { type: "LineString", coordinates: path.map(lngLat) } });
       }
     }
 
@@ -224,6 +278,7 @@
     map.getSource("legs").setData(fc(legs));
     map.getSource("walks").setData(fc(walks));
     map.getSource("network").setData(fc(network));
+    drawNav();
     drawMarkers();
     fitIfNeeded();
   }
@@ -273,7 +328,8 @@
       (leg.depart ? "<div><b>" + esc(leg.depart) + " → " + esc(leg.arrive) + "</b></div>" : "") +
       "<div><b>Board:</b> " + stopHtml(leg.board) + "</div>" +
       "<div><b>Alight:</b> " + stopHtml(leg.alight) + "</div>" +
-      '<button type="button" class="link-btn" data-toggle="' + esc(it.id) + '">' + (it.done ? "Unmark" : "Mark ridden ✓") + "</button>" +
+      '<div class="pop-btns"><button type="button" class="link-btn" data-toggle="' + esc(it.id) + '">' + (it.done ? "Unmark" : "Mark ridden ✓") + "</button>" +
+      (leg.board && leg.board.ll ? '<button type="button" class="link-btn" data-walk="1">🚶 Walk here</button>' : "") + "</div>" +
       "</div>"
     );
   }
@@ -285,6 +341,8 @@
     popup = new maplibregl.Popup({ maxWidth: "280px", offset: 10 }).setLngLat(at).setHTML(popupHtml(it)).addTo(map);
     const btn = popup.getElement().querySelector("[data-toggle]");
     if (btn) btn.addEventListener("click", () => { popup.remove(); onToggle(id); });
+    const walk = popup.getElement().querySelector("[data-walk]");
+    if (walk) walk.addEventListener("click", () => navigate({ to: it.leg.board.ll, name: it.leg.board.name, line: it.leg.line, depMin: it.leg.dep_min }));
   }
 
   // ---- Legend (tap a section to show just that part of the day) ------------
@@ -373,6 +431,7 @@
     const it = current && current.items.find((i) => i.id === id);
     if (!map || !it || !it.a) return;
     if (focusBlock && focusBlock !== it.block) setFocusBlock(null);
+    if (nav && follow) { follow = false; renderBanner(); } // stop snapping back to you
     fitTo([it], true);
     const path = it.path || [it.a, it.b];
     openPopup(id, lngLat(path[Math.floor(path.length / 2)]));
@@ -384,5 +443,245 @@
     fitIfNeeded();
   }
 
-  window.MuniMap = { init, update, focus, resize };
+  // ---- Your location & walking directions ------------------------------------
+
+  const metersBetween = (a, b) => {
+    const lat = ((a[0] + b[0]) / 2) * Math.PI / 180;
+    return Math.hypot((b[1] - a[1]) * 111320 * Math.cos(lat), (b[0] - a[0]) * 110540);
+  };
+
+  function clockMin(m) {
+    m = Math.round(m) % 1440;
+    const h = Math.floor(m / 60);
+    return ((h % 12) || 12) + ":" + String(m % 60).padStart(2, "0") + " " + (h < 12 ? "AM" : "PM");
+  }
+
+  function nowMin() {
+    const d = new Date();
+    const m = d.getHours() * 60 + d.getMinutes();
+    return m < 240 ? m + 1440 : m;
+  }
+
+  function startWatching() {
+    if (watchId != null) return;
+    if (!navigator.geolocation) { if (nav) { nav.error = "Location isn’t available on this device."; renderBanner(); } return; }
+    watchId = navigator.geolocation.watchPosition(onPosition, onPositionError, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  }
+
+  function onPosition(pos) {
+    me = { ll: [pos.coords.latitude, pos.coords.longitude], acc: pos.coords.accuracy };
+    if (!meMarker) {
+      const dot = document.createElement("div");
+      dot.className = "me-dot";
+      dot.title = "You are here";
+      meMarker = new maplibregl.Marker({ element: dot }).setLngLat(lngLat(me.ll)).addTo(map);
+    } else {
+      meMarker.setLngLat(lngLat(me.ll));
+    }
+    if (pendingCenter) {
+      pendingCenter = false;
+      map.easeTo({ center: lngLat(me.ll), zoom: Math.max(map.getZoom(), 15.5) });
+    }
+    if (nav) updateNav();
+  }
+
+  function onPositionError(err) {
+    const msg = err && err.code === 1 ? "Location permission is off — allow it for this site to get directions." : "Can’t find your location right now.";
+    if (nav) { nav.error = msg; renderBanner(); }
+    else showToast(msg);
+  }
+
+  function showToast(text) {
+    banner.innerHTML = '<div class="nav-main">' + esc(text) + '</div><div class="nav-btns"><button type="button" data-act="end">OK</button></div>';
+    banner.querySelector("[data-act=end]").addEventListener("click", () => { banner.hidden = true; });
+    banner.hidden = false;
+  }
+
+  /** Start walking directions to a stop: { to: [lat, lon], name, line, depMin }. */
+  function navigate(opts) {
+    if (!map) return;
+    nav = { ...opts, route: null, from: null, at: 0, fetching: false, failedAt: 0, error: null };
+    follow = true;
+    if (popup) popup.remove();
+    startWatching();
+    renderBanner();
+    if (me) updateNav();
+    else map.easeTo({ center: lngLat(opts.to), zoom: 16 });
+    drawNav();
+  }
+
+  function endNav() {
+    nav = null;
+    follow = false;
+    banner.hidden = true;
+    drawNav();
+  }
+
+  function updateNav() {
+    if (!nav || !me) return;
+    const off = nav.route ? distanceToPath(me.ll, nav.route) : Infinity;
+    const moved = nav.from ? metersBetween(nav.from, me.ll) : Infinity;
+    const stale = Date.now() - nav.at > 60000 && moved > 30;
+    const backoff = Date.now() - nav.failedAt < 30000;
+    if (!nav.fetching && !backoff && (off > 40 || stale)) fetchRoute();
+    if (follow) map.easeTo({ center: lngLat(me.ll), zoom: Math.max(map.getZoom(), 16.5), duration: 600 });
+    drawNav();
+    renderBanner();
+  }
+
+  async function fetchRoute() {
+    const target = nav;
+    target.fetching = true;
+    const from = me.ll.slice();
+    const url = ROUTER + from[1] + "," + from[0] + ";" + target.to[1] + "," + target.to[0] + "?overview=full&geometries=geojson";
+    try {
+      const r = await fetch(url);
+      const j = await r.json();
+      if (j.code !== "Ok" || !j.routes.length) throw new Error(j.code || "no route");
+      target.route = j.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+      target.from = from;
+      target.at = Date.now();
+      target.error = null;
+    } catch (e) {
+      target.failedAt = Date.now();
+      target.error = "offline";
+    } finally {
+      target.fetching = false;
+      if (nav === target) { drawNav(); renderBanner(); }
+    }
+  }
+
+  // Local planar metres, good enough over a few kilometres.
+  function toXY(p, lat0) {
+    return [p[1] * 111320 * Math.cos(lat0 * Math.PI / 180), p[0] * 110540];
+  }
+
+  function nearestOnPath(p, path) {
+    const lat0 = p[0], P = toXY(p, lat0);
+    let best = { d: Infinity, k: 0 };
+    for (let k = 1; k < path.length; k++) {
+      const A = toXY(path[k - 1], lat0), B = toXY(path[k], lat0);
+      const dx = B[0] - A[0], dy = B[1] - A[1];
+      const t = Math.max(0, Math.min(1, ((P[0] - A[0]) * dx + (P[1] - A[1]) * dy) / (dx * dx + dy * dy || 1)));
+      const d = Math.hypot(P[0] - (A[0] + t * dx), P[1] - (A[1] + t * dy));
+      if (d < best.d) best = { d, k };
+    }
+    return best;
+  }
+
+  const distanceToPath = (p, path) => (path.length > 1 ? nearestOnPath(p, path).d : Infinity);
+
+  /** What's left of the walk from where you are: [[lat, lon]] starting at you. */
+  function remainingRoute() {
+    if (!nav || !me) return [];
+    if (!nav.route) return [me.ll, nav.to];
+    const { k } = nearestOnPath(me.ll, nav.route);
+    return [me.ll].concat(nav.route.slice(k));
+  }
+
+  function routeLength(path) {
+    let m = 0;
+    for (let i = 1; i < path.length; i++) m += metersBetween(path[i - 1], path[i]);
+    return m;
+  }
+
+  function drawNav() {
+    if (!map || !map.getSource("nav")) return;
+    const coords = remainingRoute();
+    map.getSource("nav").setData({
+      type: "FeatureCollection",
+      features: coords.length > 1 ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords.map(lngLat) } }] : [],
+    });
+  }
+
+  function renderBanner() {
+    if (!nav) { banner.hidden = true; return; }
+    let main, sub = "to " + esc(nav.name) + (nav.line ? " for the " + esc(nav.line) : "");
+    if (nav.error && nav.error !== "offline") {
+      main = esc(nav.error);
+    } else if (!me) {
+      main = "Finding your location…";
+    } else if (metersBetween(me.ll, nav.to) < 30) {
+      main = "You’re at the stop ✓";
+    } else {
+      const left = nav.route ? routeLength(remainingRoute()) : metersBetween(me.ll, nav.to) * 1.25;
+      const mins = Math.max(1, Math.round(left / 75));
+      main = (left < 950 ? Math.round(left / 10) * 10 + " m" : (left / 1609.34).toFixed(1) + " mi") + " · " + mins + " min walk";
+      if (nav.depMin != null) {
+        const spare = nav.depMin - (nowMin() + mins);
+        if (Math.abs(spare) < 240) sub += " · " + (spare >= 0 ? "due " + clockMin(nav.depMin) + " (" + Math.round(spare) + " min spare)" : "planned " + clockMin(nav.depMin) + " — you’ll miss it");
+      }
+      if (nav.error === "offline") sub += " · offline: straight line";
+    }
+    banner.innerHTML =
+      '<div class="nav-main">🚶 ' + main + '</div><div class="nav-sub">' + sub + "</div>" +
+      '<div class="nav-btns">' + (follow ? "" : '<button type="button" data-act="recenter">Recenter</button>') +
+      '<button type="button" data-act="end">End</button></div>';
+    const rc = banner.querySelector("[data-act=recenter]");
+    if (rc) rc.addEventListener("click", () => { follow = true; if (me) map.easeTo({ center: lngLat(me.ll), zoom: 16.5 }); renderBanner(); });
+    banner.querySelector("[data-act=end]").addEventListener("click", endNav);
+    banner.hidden = false;
+  }
+
+  // ---- Offline basemap ----------------------------------------------------------
+
+  const SF = { s: 37.70, n: 37.835, w: -122.52, e: -122.355 }; // incl. Treasure Island
+
+  function tileXY(lon, lat, z) {
+    const n = 2 ** z, r = lat * Math.PI / 180;
+    return [Math.floor(((lon + 180) / 360) * n), Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n)];
+  }
+
+  /** Store the light + dark styles, sprites, label fonts and SF tiles (z10–14) in the cache sw.js reads. */
+  async function saveOffline(progress) {
+    if (!("caches" in window)) throw new Error("this browser can’t store files offline");
+    const cache = await caches.open(MAP_CACHE);
+    const grab = async (url) => {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(r.status + " for " + url.split("/").slice(-2).join("/"));
+      await cache.put(url, r.clone());
+      return r;
+    };
+    const urls = new Set();
+    let tiles = null, maxzoom = 14;
+    for (const name of ["liberty", "dark"]) {
+      const style = await (await grab("https://tiles.openfreemap.org/styles/" + name)).json();
+      for (const src of Object.values(style.sources || {})) {
+        if (src.url && !tiles) {
+          const tj = await (await grab(src.url)).json();
+          tiles = tj.tiles[0];
+          maxzoom = Math.min(14, tj.maxzoom || 14);
+        }
+      }
+      if (typeof style.sprite === "string") [".json", ".png", "@2x.json", "@2x.png"].forEach((s) => urls.add(style.sprite + s));
+      const fonts = new Set();
+      (style.layers || []).forEach((l) => {
+        const f = l.layout && l.layout["text-font"];
+        if (Array.isArray(f) && f.every((x) => typeof x === "string")) fonts.add(f.join(","));
+      });
+      if (style.glyphs) fonts.forEach((f) => urls.add(style.glyphs.replace("{fontstack}", encodeURIComponent(f)).replace("{range}", "0-255")));
+    }
+    if (!tiles) throw new Error("no tile source in the map style");
+    for (let z = 10; z <= maxzoom; z++) {
+      const [x0, y0] = tileXY(SF.w, SF.n, z), [x1, y1] = tileXY(SF.e, SF.s, z);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) urls.add(tiles.replace("{z}", z).replace("{x}", x).replace("{y}", y));
+    }
+    const list = [...urls], total = list.length;
+    let done = 0, saved = 0;
+    const worker = async () => {
+      while (list.length) {
+        const url = list.pop();
+        try {
+          if (!(await cache.match(url))) await grab(url);
+          saved++;
+        } catch (e) { /* skip one missing file */ }
+        progress(++done, total);
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    if (saved < total * 0.8) throw new Error("only " + saved + " of " + total + " files saved");
+    return saved;
+  }
+
+  window.MuniMap = { init, update, focus, resize, navigate, saveOffline };
 })();

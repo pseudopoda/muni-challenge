@@ -24,6 +24,7 @@
       </div>
       <button class="link-btn" id="jumpNext" type="button">Next ↓</button>
     </div>
+    <div class="live-strip" id="liveStatus" role="status" aria-live="polite" hidden></div>
   </header>
 
   <div class="layout">
@@ -45,6 +46,10 @@
       <section class="card" aria-labelledby="optsTitle">
         <h2 class="card-title" id="optsTitle">Your day</h2>
         <div id="options" class="options"></div>
+        <div class="offline-row">
+          <button class="link-btn" id="offlineBtn" type="button">Save map for offline</button>
+          <span class="hint" id="offlineNote"></span>
+        </div>
       </section>
 
       <section class="card" id="planCheck"></section>
@@ -53,6 +58,7 @@
 
       <section class="card finish" id="finishCard">
         🍻 <strong>Finish: Bus Stop, Union Street.</strong> <span id="finishText"></span>
+        <div id="finishStats" hidden></div>
       </section>
 
       <section>
@@ -65,6 +71,7 @@
       <footer class="foot">
         <button class="link-btn danger" id="resetBtn" type="button">Reset progress</button>
         <p>Progress is saved on this device only. Not affiliated with SFMTA. Have fun, and hydrate.</p>
+        <p class="disclaimer">Walking directions (🚶) use your location only while they’re on, and send it to the free <a href="https://routing.openstreetmap.de/about.html">FOSSGIS OSRM</a> router to plan the walk. Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors.</p>
         <p class="disclaimer">Stop, route and schedule data: SFMTA GTFS, used under the <a href="SFMTA_Transit_Data_License_Agreement.txt">SFMTA Transit Data License Agreement</a>. The SFMTA provides the Data “as is” and “as available” and makes no representations or warranties of any kind as to its accuracy. The SFMTA and its employees, officers, directors and agents shall not be liable for damages of any kind arising from the use of the Data or any application that uses the Data. Use of this app is at your own risk.</p>
       </footer>
     </main>
