@@ -2,8 +2,10 @@
   "use strict";
 
   const DATA = window.MUNI_DATA;
+  const MAP = window.MuniMap;
   const STORAGE_KEY = "muni-challenge:v1";
   const MODE_LABEL = { cable: "Cable car", rail: "Rail", bus: "Bus", owl: "Owl" };
+  const WIDE = window.matchMedia("(min-width: 1000px)");
 
   // ---- State -------------------------------------------------------------
 
@@ -47,6 +49,30 @@
       .filter((b) => isOptionOn(b.option))
       .map((b) => ({ ...b, legs: b.legs.filter((l) => isOptionOn(l.option)) }))
       .filter((b) => b.legs.length);
+  }
+
+  function toggleDone(id, value) {
+    const on = value === undefined ? !state.done[id] : value;
+    if (on) state.done[id] = Date.now();
+    else delete state.done[id];
+    saveState();
+    render();
+  }
+
+  // ---- View (list / map) -------------------------------------------------
+
+  function setView(view) {
+    document.body.dataset.view = view;
+    document.querySelectorAll(".view-toggle button").forEach((b) => {
+      b.setAttribute("aria-selected", String(b.dataset.view === view));
+    });
+    if (view === "map") MAP.resize();
+  }
+
+  function showOnMap(id) {
+    if (!WIDE.matches) setView("map");
+    // Wait a frame so the map has its real size before zooming.
+    requestAnimationFrame(() => { MAP.resize(); MAP.focus(id); });
   }
 
   // ---- Rendering ---------------------------------------------------------
@@ -93,7 +119,7 @@
     }
   }
 
-  function renderLeg(leg) {
+  function renderLeg(leg, n, color) {
     const id = legId(leg);
     const done = !!state.done[id];
     const classes = ["leg", leg.mode === "owl" && "owl", leg.risk && "risk", done && "done"].filter(Boolean).join(" ");
@@ -107,21 +133,19 @@
       el("dt", { text: "Then" }), el("dd", { text: leg.next }),
     ]);
 
-    return el("li", { class: classes, id: "leg-" + id, "data-id": id }, [
+    return el("li", { class: classes, id: "leg-" + id, "data-id": id, style: "--block:" + color }, [
       el("input", {
         type: "checkbox",
         class: "check",
         checked: done,
         "aria-label": "Rode " + leg.line,
-        onchange: (e) => {
-          if (e.target.checked) state.done[id] = Date.now();
-          else delete state.done[id];
-          saveState();
-          render();
-        },
+        onchange: (e) => toggleDone(id, e.target.checked),
       }),
       el("div", { class: "leg-body" }, [
-        el("p", { class: "leg-line" }, [el("span", { text: leg.line })].concat(tags)),
+        el("div", { class: "leg-head" }, [
+          el("p", { class: "leg-line" }, [el("span", { class: "leg-num", text: n }), el("span", { text: leg.line })].concat(tags)),
+          leg.from ? el("button", { type: "button", class: "map-btn", title: "Show on map", "aria-label": "Show " + leg.line + " on map", text: "📍", onclick: () => showOnMap(id) }) : null,
+        ]),
         route,
         leg.note ? el("p", { class: "leg-note", text: leg.note }) : null,
       ]),
@@ -132,28 +156,32 @@
     renderOptions();
 
     const blocks = visibleBlocks();
-    const legs = blocks.flatMap((b) => b.legs);
-    const total = new Set(legs.map(legId)).size;
-    const doneCount = legs.filter((l) => state.done[legId(l)]).length;
+    const items = [];
+    blocks.forEach((b) => b.legs.forEach((leg) => {
+      const id = legId(leg);
+      items.push({ leg, id, color: b.color, done: !!state.done[id], n: items.length + 1 });
+    }));
+    const total = new Set(items.map((i) => i.id)).size;
+    const doneCount = items.filter((i) => i.done).length;
+    const next = items.find((i) => !i.done);
 
     const container = $("itinerary");
     container.replaceChildren();
+    let n = 0;
     for (const block of blocks) {
       const blockDone = block.legs.filter((l) => state.done[legId(l)]).length;
       container.append(
         el("section", { id: "block-" + block.id }, [
-          el("h2", { class: "block-head" }, [
+          el("h2", { class: "block-head", style: "--block:" + block.color }, [
             el("span", {}, [el("span", { class: "time", text: block.time }), block.title]),
             el("span", { class: "count", text: blockDone + "/" + block.legs.length }),
           ]),
-          el("ol", { class: "legs" }, block.legs.map(renderLeg)),
+          el("ol", { class: "legs" }, block.legs.map((leg) => renderLeg(leg, ++n, block.color))),
         ])
       );
     }
 
-    // Highlight the first unridden leg.
-    const next = legs.find((l) => !state.done[legId(l)]);
-    if (next) $("leg-" + legId(next)).classList.add("next");
+    if (next) $("leg-" + next.id).classList.add("next");
     $("jumpNext").hidden = !next;
 
     $("doneCount").textContent = doneCount;
@@ -167,6 +195,17 @@
       doneCount === total
         ? "You did it — all " + total + " lines. 🎉"
         : total + " lines on today's plan · " + (total - doneCount) + " to go.";
+
+    MAP.update(items, next && next.id, DATA.finish);
+    renderLegend(blocks);
+  }
+
+  function renderLegend(blocks) {
+    $("mapLegend").replaceChildren(
+      ...blocks.map((b) => el("span", { class: "legend-item" }, [el("span", { class: "swatch", style: "background:" + b.color }), b.time])),
+      el("span", { class: "legend-item" }, [el("span", { class: "swatch walk" }), "walk"]),
+      el("span", { class: "legend-item" }, [el("span", { class: "swatch", style: "background:#9a9a9a" }), "ridden"])
+    );
   }
 
   function renderStatic() {
@@ -178,8 +217,15 @@
 
   $("jumpNext").addEventListener("click", () => {
     const next = document.querySelector(".leg.next");
-    if (next) next.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!next) return;
+    if (document.body.dataset.view === "map" && !WIDE.matches) MAP.focus(next.dataset.id);
+    else next.scrollIntoView({ behavior: "smooth", block: "center" });
   });
+
+  document.querySelectorAll(".view-toggle button").forEach((b) => {
+    b.addEventListener("click", () => setView(b.dataset.view));
+  });
+  WIDE.addEventListener("change", () => MAP.resize());
 
   $("resetBtn").addEventListener("click", () => {
     if (!confirm("Clear all checked-off lines?")) return;
@@ -188,6 +234,7 @@
     render();
   });
 
+  MAP.init($("map"), { onToggle: (id) => toggleDone(id) });
   renderStatic();
   render();
 

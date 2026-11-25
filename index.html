@@ -4,63 +4,77 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Muni Challenge</title>
-  <meta name="description" content="Ride every San Francisco Muni line in one day — an itinerary with a live progress tracker.">
+  <meta name="description" content="Ride every San Francisco Muni line in one day — an itinerary with an interactive map and live progress tracker.">
   <meta name="theme-color" content="#0072ce">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <link rel="stylesheet" href="css/styles.css">
 </head>
-<body>
+<body data-view="list">
   <header class="topbar">
-    <div class="wrap topbar-inner">
+    <div class="topbar-inner">
       <div class="progress-text"><strong id="doneCount">0</strong> / <span id="totalCount">0</span> lines</div>
       <div class="progress" role="progressbar" aria-label="Lines ridden" aria-valuemin="0" id="progressBar">
         <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <div class="view-toggle" role="tablist" aria-label="View">
+        <button type="button" role="tab" data-view="list" aria-selected="true">List</button>
+        <button type="button" role="tab" data-view="map" aria-selected="false">Map</button>
       </div>
       <button class="link-btn" id="jumpNext" type="button">Next ↓</button>
     </div>
   </header>
 
-  <main class="wrap">
-    <h1>🚋 The Muni Challenge</h1>
-    <p class="sub">Ride every Muni line in one day — ending at Bus Stop, Union Street.</p>
+  <div class="layout">
+    <main class="list-pane">
+      <h1>🚋 The Muni Challenge</h1>
+      <p class="sub">Ride every Muni line in one day — ending at Bus Stop, Union Street.</p>
 
-    <section class="card">
-      <h2 class="card-title">Rules</h2>
-      <ul class="rules">
-        <li>Ride at least 3 blocks on every line.</li>
-        <li>No transfer walk over 5 blocks.</li>
-        <li>Express/rapid variants count as their base line (1X, 5R, 8AX/8BX, 9R, 14R, 28R, 30X, 38R).</li>
-        <li>Finish at Bus Stop, Union St.</li>
-      </ul>
-      <p class="muted"><strong>Best day:</strong> Tuesday–Thursday. Avoids Monday holiday schedules and Friday evening crowds, and every line runs at full weekday frequency.</p>
-    </section>
+      <section class="card">
+        <h2 class="card-title">Rules</h2>
+        <ul class="rules">
+          <li>Ride at least 3 blocks on every line.</li>
+          <li>No transfer walk over 5 blocks.</li>
+          <li>Express/rapid variants count as their base line (1X, 5R, 8AX/8BX, 9R, 14R, 28R, 30X, 38R).</li>
+          <li>Finish at Bus Stop, Union St.</li>
+        </ul>
+        <p class="muted"><strong>Best day:</strong> Tuesday–Thursday. Avoids Monday holiday schedules and Friday evening crowds, and every line runs at full weekday frequency.</p>
+      </section>
 
-    <section class="card" aria-labelledby="optsTitle">
-      <h2 class="card-title" id="optsTitle">Your day</h2>
-      <div id="options" class="options"></div>
-    </section>
+      <section class="card" aria-labelledby="optsTitle">
+        <h2 class="card-title" id="optsTitle">Your day</h2>
+        <div id="options" class="options"></div>
+      </section>
 
-    <div id="itinerary"></div>
+      <div id="itinerary"></div>
 
-    <section class="card finish" id="finishCard">
-      🍻 <strong>Finish: Bus Stop, Union Street.</strong> <span id="finishText"></span>
-    </section>
+      <section class="card finish" id="finishCard">
+        🍻 <strong>Finish: Bus Stop, Union Street.</strong> <span id="finishText"></span>
+      </section>
 
-    <section>
-      <h2>Not counted</h2>
-      <ul id="excluded" class="muted"></ul>
-      <h2>Honest caveats</h2>
-      <ul id="caveats"></ul>
-    </section>
+      <section>
+        <h2>Not counted</h2>
+        <ul id="excluded" class="muted"></ul>
+        <h2>Honest caveats</h2>
+        <ul id="caveats"></ul>
+      </section>
 
-    <footer class="foot">
-      <button class="link-btn danger" id="resetBtn" type="button">Reset progress</button>
-      <p>Progress is saved on this device only. Not affiliated with SFMTA. Have fun, and hydrate.</p>
-    </footer>
-  </main>
+      <footer class="foot">
+        <button class="link-btn danger" id="resetBtn" type="button">Reset progress</button>
+        <p>Progress is saved on this device only. Not affiliated with SFMTA. Have fun, and hydrate.</p>
+      </footer>
+    </main>
 
+    <aside class="map-pane" aria-label="Route map">
+      <div id="map"></div>
+      <div class="map-legend" id="mapLegend"></div>
+    </aside>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="js/data.js"></script>
+  <script src="js/map.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

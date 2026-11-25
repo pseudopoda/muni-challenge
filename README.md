@@ -4,6 +4,7 @@ Ride every San Francisco Muni line in one day, ending at Bus Stop on Union Stree
 
 A small, dependency-free web app with the full itinerary and a progress tracker:
 
+- **Interactive map** (Leaflet + OpenStreetMap): every leg numbered and colored by time block, walking transfers dashed, ridden lines grayed out, the next line highlighted. Tap a line to mark it ridden; tap 📍 on any leg to jump to it. Side-by-side on desktop, List/Map tabs on phones.
 - **Check off lines as you ride.** Progress is saved in your browser (localStorage).
 - **Options** for Owl lines (overnight), the 78X (Chase Center event days only) and the 714 BART Early Bird. The line count updates to match: 50 / 51 / 55 / 56.
 - **"Next" highlight** jumps to the first line you haven't ridden.
@@ -27,7 +28,7 @@ One-time setup: **Settings → Pages → Build and deployment → Source: GitHub
 
 ## Editing the route
 
-All itinerary content lives in [`js/data.js`](js/data.js): time blocks, legs (board / alight / next transfer), risk flags and optional legs. Progress is keyed by line name, so reordering legs keeps people's check-offs.
+All itinerary content lives in [`js/data.js`](js/data.js): time blocks (with map colors), legs (board / alight / next transfer, plus `from`/`to` coordinates for the map), risk flags and optional legs. Progress is keyed by line name, so reordering legs keeps people's check-offs.
 
 After changing files, bump `CACHE` in [`sw.js`](sw.js) so installed copies pick up the update.
 
