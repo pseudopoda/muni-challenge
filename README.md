@@ -2,7 +2,7 @@
 
 Ride every San Francisco Muni line in one day, ending at Bus Stop on Union Street.
 
-A small, dependency-free web app with the full itinerary and a progress tracker:
+A small, no-build web app (Leaflet is loaded from a CDN for the map) with the full itinerary and a progress tracker:
 
 - **Interactive map** (Leaflet + OpenStreetMap): every leg numbered and colored by time block, walking transfers dashed, ridden lines grayed out, the next line highlighted. Tap a line to mark it ridden; tap 📍 on any leg to jump to it. Side-by-side on desktop, List/Map tabs on phones.
 - **Check off lines as you ride.** Progress is saved in your browser (localStorage).
