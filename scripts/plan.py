@@ -42,7 +42,7 @@ PLAN_JS = ROOT / "js" / "plan.js"
 
 WEEKDAY = "M11"            # weekday service_id in the current SFMTA feed
 MILE = 1609.34
-MIN_RIDE_MI = 0.2          # ≈ 3 blocks
+MIN_RIDE_MI = 0.25         # ≈ 3–4 blocks, so every ride clearly counts
 MAX_RIDE_MI = 2.5          # don't pick absurdly long rides
 WALK_LIMIT_M = 450         # straight-line ≈ 5 blocks on the street
 WALK_SPEED = 75 / 1.25     # m/min of straight-line distance (75 m/min with 25% street detour)

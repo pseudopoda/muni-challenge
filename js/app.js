@@ -174,7 +174,7 @@
 
     const when = leg.manual
       ? "Time depends on the event"
-      : leg.depart + " → " + leg.arrive + " · " + leg.ride_min + " min" + (leg.stops ? ", " + leg.stops + " stops" : "");
+      : leg.depart + " → " + leg.arrive + " · " + leg.ride_min + " min" + (leg.stops ? ", " + leg.stops + (leg.stops === 1 ? " stop" : " stops") : "");
 
     const route = el("dl", { class: "leg-route" }, [
       el("dt", { text: "When" }), el("dd", { class: "when", text: when }),

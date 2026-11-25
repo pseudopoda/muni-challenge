@@ -33,7 +33,7 @@ The itinerary is generated from SFMTA's GTFS schedule data, not written by hand.
 
 - [`js/data.js`](js/data.js) lists **which** lines to ride, plus notes, risk flags and options.
 - [`scripts/plan.py`](scripts/plan.py) reads the GTFS feed and, for every line, considers every real
-  stop pair where the ride is at least ~3 blocks. It picks stops that keep every walk between lines
+  stop pair where the ride is at least ~0.25 mi (3–4 blocks). It picks stops that keep every walk between lines
   under ~5 blocks (450 m straight-line), searches for the line order that gets you to the finish
   soonest using the real weekday timetable, and writes [`js/plan.js`](js/plan.js) (order, stops,
   scheduled times and map paths).
