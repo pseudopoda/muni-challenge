@@ -30,6 +30,16 @@ One-time setup: **Settings → Pages → Build and deployment → Source: GitHub
 
 All itinerary content lives in [`js/data.js`](js/data.js): time blocks (with map colors), legs (board / alight / next transfer, plus `from`/`to` coordinates for the map), risk flags and optional legs. Progress is keyed by line name, so reordering legs keeps people's check-offs.
 
+After changing legs, rebuild the real stop/route geometry from SFMTA's GTFS feed
+(download it from https://www.sfmta.com/reports/gtfs-transit-data — requires accepting their license):
+
+```sh
+python scripts/build_geo.py path/to/muni_gtfs-current.zip
+```
+
+This writes `js/geo.js` and prints how far each leg's planned board/alight points are from the nearest
+real stop on that line. The app flags legs over 250 m off and transfers over ~650 m (≈5 blocks).
+
 After changing files, bump `CACHE` in [`sw.js`](sw.js) so installed copies pick up the update.
 
 ## Rules
@@ -37,6 +47,11 @@ After changing files, bump `CACHE` in [`sw.js`](sw.js) so installed copies pick 
 - Ride at least 3 blocks on every line.
 - No transfer walk over 5 blocks.
 - Express/rapid variants count as their base line (1X, 5R, 8AX/8BX, 9R, 14R, 28R, 30X, 38R).
+
+## Data
+
+Stop and route data from SFMTA's GTFS feed, used under the [SFMTA Transit Data License Agreement](SFMTA_Transit_Data_License_Agreement.txt).
+The SFMTA provides the Data "as is" and makes no warranties as to its accuracy; SFMTA is not liable for damages arising from use of the Data or this app.
 
 ## Caveats
 

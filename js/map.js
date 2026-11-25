@@ -54,13 +54,18 @@
     return true;
   }
 
-  function popupHtml(leg, id, n, done) {
+  function stopHtml(stop, fallback) {
+    if (!stop) return esc(fallback);
+    return esc(stop.name) + ' <a href="https://www.sfmta.com/' + encodeURIComponent(stop.code) + '" target="_blank" rel="noopener">#' + esc(stop.code) + " live ↗</a>";
+  }
+
+  function popupHtml(leg, g, id, n, done) {
     return (
       '<div class="pop">' +
       "<strong>" + n + ". " + esc(leg.line) + "</strong>" +
       (leg.risk ? ' <span class="tag risk">⚠ Infrequent</span>' : "") +
-      "<div><b>Board:</b> " + esc(leg.board) + "</div>" +
-      "<div><b>Alight:</b> " + esc(leg.alight) + "</div>" +
+      "<div><b>Board:</b> " + stopHtml(g && g.board, leg.board) + "</div>" +
+      "<div><b>Alight:</b> " + stopHtml(g && g.alight, leg.alight) + "</div>" +
       "<div><b>Then:</b> " + esc(leg.next) + "</div>" +
       '<button type="button" class="link-btn" data-toggle="' + id + '">' + (done ? "Unmark" : "Mark ridden ✓") + "</button>" +
       "</div>"
@@ -77,34 +82,35 @@
     const all = [];
 
     legs.forEach((item, i) => {
-      const { leg, id, color, done, n } = item;
-      if (!leg.from || !leg.to) return;
+      const { leg, g, a, b, id, color, done, n } = item;
+      if (!a || !b) return;
       const isNext = id === nextId;
       const c = done ? DONE_COLOR : color;
+      const path = g ? g.path : [a, b];
 
-      // Walking transfer from the previous leg's alight point.
+      // Walking transfer from the previous leg's alight point (red if it breaks the 5-block rule).
       const prev = legs[i - 1];
-      if (prev && prev.leg.to && map.distance(prev.leg.to, leg.from) > 25) {
-        L.polyline([prev.leg.to, leg.from], { color: "#555", weight: 2, dashArray: "6 6", opacity: 0.7, interactive: false }).addTo(layer);
+      if (prev && prev.b && map.distance(prev.b, a) > 25) {
+        L.polyline([prev.b, a], { color: item.longWalk ? "#c62828" : "#555", weight: item.longWalk ? 3 : 2, dashArray: "6 6", opacity: 0.8, interactive: false }).addTo(layer);
       }
 
-      if (isNext) L.polyline([leg.from, leg.to], { color: "#fff", weight: 11, opacity: 0.9, interactive: false }).addTo(layer);
-      const line = L.polyline([leg.from, leg.to], { color: c, weight: isNext ? 7 : 5, opacity: done ? 0.6 : 0.95 })
-        .bindPopup(popupHtml(leg, id, n, done))
+      if (isNext) L.polyline(path, { color: "#fff", weight: 11, opacity: 0.9, interactive: false }).addTo(layer);
+      const line = L.polyline(path, { color: c, weight: isNext ? 7 : 5, opacity: done ? 0.6 : 0.95 })
+        .bindPopup(popupHtml(leg, g, id, n, done))
         .addTo(layer);
-      L.circleMarker(leg.to, { radius: 4, color: "#fff", weight: 1.5, fillColor: c, fillOpacity: 1, interactive: false }).addTo(layer);
-      L.marker(leg.from, { icon: numberIcon(n, c, isNext ? "next" : done ? "done" : ""), zIndexOffset: isNext ? 1000 : done ? -100 : 0, title: n + ". " + leg.line })
-        .on("click", () => line.openPopup(leg.from))
+      L.circleMarker(b, { radius: 4, color: "#fff", weight: 1.5, fillColor: c, fillOpacity: 1, interactive: false }).addTo(layer);
+      L.marker(a, { icon: numberIcon(n, c, isNext ? "next" : done ? "done" : ""), zIndexOffset: isNext ? 1000 : done ? -100 : 0, title: n + ". " + leg.line })
+        .on("click", () => line.openPopup(a))
         .addTo(layer);
 
       byId[id] = line;
-      all.push(leg.from, leg.to);
+      all.push(...path);
     });
 
     if (finish) {
       const last = legs[legs.length - 1];
-      if (last && last.leg.to && map.distance(last.leg.to, finish.at) > 25) {
-        L.polyline([last.leg.to, finish.at], { color: "#555", weight: 2, dashArray: "6 6", opacity: 0.7 }).addTo(layer);
+      if (last && last.b && map.distance(last.b, finish.at) > 25) {
+        L.polyline([last.b, finish.at], { color: "#555", weight: 2, dashArray: "6 6", opacity: 0.7 }).addTo(layer);
       }
       L.marker(finish.at, {
         icon: L.divIcon({ className: "finish-icon", html: "🍻", iconSize: [30, 30], iconAnchor: [15, 15] }),

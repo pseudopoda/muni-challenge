@@ -47,7 +47,9 @@
         <div id="options" class="options"></div>
       </section>
 
-      <div id="itinerary"></div>
+      <section class="card warn-card" id="planCheck" hidden></section>
+
+    <div id="itinerary"></div>
 
       <section class="card finish" id="finishCard">
         🍻 <strong>Finish: Bus Stop, Union Street.</strong> <span id="finishText"></span>
@@ -63,6 +65,7 @@
       <footer class="foot">
         <button class="link-btn danger" id="resetBtn" type="button">Reset progress</button>
         <p>Progress is saved on this device only. Not affiliated with SFMTA. Have fun, and hydrate.</p>
+        <p class="disclaimer">Stop and route data: SFMTA GTFS, used under the <a href="SFMTA_Transit_Data_License_Agreement.txt">SFMTA Transit Data License Agreement</a>. The SFMTA provides the Data “as is” and “as available” and makes no representations or warranties of any kind as to its accuracy. The SFMTA and its employees, officers, directors and agents shall not be liable for damages of any kind arising from the use of the Data or any application that uses the Data. Use of this app is at your own risk.</p>
       </footer>
     </main>
 
@@ -74,6 +77,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="js/data.js"></script>
+  <script src="js/geo.js"></script>
   <script src="js/map.js"></script>
   <script src="js/app.js"></script>
 </body>

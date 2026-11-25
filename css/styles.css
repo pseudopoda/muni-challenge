@@ -115,6 +115,12 @@ a { color: var(--accent); }
 .legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .swatch { width: 18px; height: 4px; border-radius: 2px; display: inline-block; }
 .swatch.walk { border-top: 2px dashed #555; height: 0; border-radius: 0; }
+.swatch.walk.long { border-top-color: #c62828; }
+.warn-card { border-color: var(--risk); background: var(--risk-bg); }
+.warn-card ul { margin: .3rem 0; padding-left: 1.2rem; font-size: .9rem; }
+.warn-line { color: var(--risk); font-size: .85rem; font-weight: 600; margin: 2px 0 0; }
+.stop-link { font-size: .8rem; white-space: nowrap; }
+.disclaimer { font-size: .75rem; }
 .map-error { padding: 20px; color: var(--sub); }
 .stop-num span { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--c); color: #fff; font: 700 11px/1 var(--sans); border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
 .stop-num.next span { width: 30px; height: 30px; margin: -3px; font-size: 13px; box-shadow: 0 0 0 3px var(--accent), 0 1px 4px rgba(0,0,0,.4); }

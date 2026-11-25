@@ -3,6 +3,9 @@
 
   const DATA = window.MUNI_DATA;
   const MAP = window.MuniMap;
+  const GEO = window.MUNI_GEO || {}; // real GTFS stops + shapes, from scripts/build_geo.py
+  const OFF_WARN_M = 250; // plan point vs. nearest real stop on that line
+  const WALK_MAX_M = 650; // ≈ 5 San Francisco blocks, straight line
   const STORAGE_KEY = "muni-challenge:v1";
   const MODE_LABEL = { cable: "Cable car", rail: "Rail", bus: "Bus", owl: "Owl" };
   const WIDE = window.matchMedia("(min-width: 1000px)");
@@ -57,6 +60,13 @@
     else delete state.done[id];
     saveState();
     render();
+  }
+
+  function meters(p, q) {
+    const lat = ((p[0] + q[0]) / 2) * Math.PI / 180;
+    const dx = (q[1] - p[1]) * 111320 * Math.cos(lat);
+    const dy = (q[0] - p[0]) * 110540;
+    return Math.round(Math.hypot(dx, dy));
   }
 
   // ---- View (list / map) -------------------------------------------------
@@ -119,8 +129,18 @@
     }
   }
 
-  function renderLeg(leg, n, color) {
-    const id = legId(leg);
+  function stopNode(stop, planText, off) {
+    if (!stop) return el("dd", { text: planText });
+    const kids = [
+      stop.name + " ",
+      el("a", { href: "https://www.sfmta.com/" + encodeURIComponent(stop.code), target: "_blank", rel: "noopener", class: "stop-link", text: "#" + stop.code + " live ↗" }),
+    ];
+    if (off > OFF_WARN_M) kids.push(el("div", { class: "warn-line", text: "⚠ Plan says “" + planText + "” — this line’s nearest stop is ~" + off + " m away." }));
+    return el("dd", {}, kids);
+  }
+
+  function renderLeg(item) {
+    const { leg, g, id, n, color } = item;
     const done = !!state.done[id];
     const classes = ["leg", leg.mode === "owl" && "owl", leg.risk && "risk", done && "done"].filter(Boolean).join(" ");
 
@@ -128,8 +148,8 @@
     if (leg.risk) tags.push(el("span", { class: "tag risk", text: "⚠ Infrequent" }));
 
     const route = el("dl", { class: "leg-route" }, [
-      el("dt", { text: "Board" }), el("dd", { text: leg.board }),
-      el("dt", { text: "Alight" }), el("dd", { text: leg.alight }),
+      el("dt", { text: "Board" }), stopNode(g && g.board, leg.board, g ? g.off[0] : 0),
+      el("dt", { text: "Alight" }), stopNode(g && g.alight, leg.alight, g ? g.off[1] : 0),
       el("dt", { text: "Then" }), el("dd", { text: leg.next }),
     ]);
 
@@ -147,6 +167,7 @@
           leg.from ? el("button", { type: "button", class: "map-btn", title: "Show on map", "aria-label": "Show " + leg.line + " on map", text: "📍", onclick: () => showOnMap(id) }) : null,
         ]),
         route,
+        item.longWalk ? el("p", { class: "warn-line", text: "⚠ ~" + item.walk + " m walk from the previous line — over the 5-block limit." }) : null,
         leg.note ? el("p", { class: "leg-note", text: leg.note }) : null,
       ]),
     ]);
@@ -159,7 +180,16 @@
     const items = [];
     blocks.forEach((b) => b.legs.forEach((leg) => {
       const id = legId(leg);
-      items.push({ leg, id, color: b.color, done: !!state.done[id], n: items.length + 1 });
+      const g = GEO[id];
+      const a = g ? g.board.ll : leg.from;
+      const z = g ? g.alight.ll : leg.to;
+      const prev = items[items.length - 1];
+      const walk = prev && prev.b && a ? meters(prev.b, a) : 0;
+      items.push({
+        leg, g, a, b: z, id, color: b.color, done: !!state.done[id], n: items.length + 1,
+        walk, longWalk: walk > WALK_MAX_M,
+        offPlan: !!g && Math.max(g.off[0], g.off[1]) > OFF_WARN_M,
+      });
     }));
     const total = new Set(items.map((i) => i.id)).size;
     const doneCount = items.filter((i) => i.done).length;
@@ -167,7 +197,7 @@
 
     const container = $("itinerary");
     container.replaceChildren();
-    let n = 0;
+    const byId = Object.fromEntries(items.map((i) => [i.id, i]));
     for (const block of blocks) {
       const blockDone = block.legs.filter((l) => state.done[legId(l)]).length;
       container.append(
@@ -176,7 +206,7 @@
             el("span", {}, [el("span", { class: "time", text: block.time }), block.title]),
             el("span", { class: "count", text: blockDone + "/" + block.legs.length }),
           ]),
-          el("ol", { class: "legs" }, block.legs.map((leg) => renderLeg(leg, ++n, block.color))),
+          el("ol", { class: "legs" }, block.legs.map((leg) => renderLeg(byId[legId(leg)]))),
         ])
       );
     }
@@ -196,14 +226,34 @@
         ? "You did it — all " + total + " lines. 🎉"
         : total + " lines on today's plan · " + (total - doneCount) + " to go.";
 
+    renderPlanCheck(items);
     MAP.update(items, next && next.id, DATA.finish);
     renderLegend(blocks);
+  }
+
+  function renderPlanCheck(items) {
+    const off = items.filter((i) => i.offPlan);
+    const walks = items.filter((i) => i.longWalk);
+    const missing = items.filter((i) => !i.g);
+    const box = $("planCheck");
+    box.hidden = !(off.length || walks.length || missing.length);
+    const list = (arr) => arr.map((i) => i.n + ". " + i.leg.line.split(" ")[0]).join(", ");
+    box.replaceChildren(
+      el("h2", { class: "card-title", text: "⚠ Plan check against SFMTA’s schedule data" }),
+      el("ul", {}, [
+        off.length ? el("li", { text: off.length + " legs board or alight where that line doesn’t stop (real stops shown instead): " + list(off) }) : null,
+        walks.length ? el("li", { text: walks.length + " transfers are longer than ~5 blocks: before " + list(walks) }) : null,
+        missing.length ? el("li", { text: "Not in the current feed (location approximate): " + list(missing) }) : null,
+      ]),
+      el("p", { class: "muted", text: "These legs need re-planning before the day." })
+    );
   }
 
   function renderLegend(blocks) {
     $("mapLegend").replaceChildren(
       ...blocks.map((b) => el("span", { class: "legend-item" }, [el("span", { class: "swatch", style: "background:" + b.color }), b.time])),
       el("span", { class: "legend-item" }, [el("span", { class: "swatch walk" }), "walk"]),
+      el("span", { class: "legend-item" }, [el("span", { class: "swatch walk long" }), "walk > 5 blocks"]),
       el("span", { class: "legend-item" }, [el("span", { class: "swatch", style: "background:#9a9a9a" }), "ridden"])
     );
   }
