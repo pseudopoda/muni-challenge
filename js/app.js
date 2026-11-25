@@ -265,8 +265,7 @@
         : "Planned arrival ~" + PLAN.finishAt + " · " + total + " lines · " + (total - doneCount) + " to go.";
 
     renderPlanCheck(items);
-    MAP.update(items, next && next.id, DATA.finish);
-    renderLegend(blocks);
+    MAP.update(items, next && next.id, DATA.finish, blocks);
   }
 
   function renderPlanCheck(items) {
@@ -285,14 +284,6 @@
         PLAN.missing && PLAN.missing.length ? el("li", { text: "Not in SFMTA’s schedule data (approximate): " + PLAN.missing.join(", ") + "." }) : null,
       ]),
       el("p", { class: "muted", text: "Scheduled times assume everything runs on time — there’s little slack, so expect to adapt." })
-    );
-  }
-
-  function renderLegend(blocks) {
-    $("mapLegend").replaceChildren(
-      ...blocks.map((b) => el("span", { class: "legend-item" }, [el("span", { class: "swatch", style: "background:" + b.color }), b.time])),
-      el("span", { class: "legend-item" }, [el("span", { class: "swatch walk" }), "walk"]),
-      el("span", { class: "legend-item" }, [el("span", { class: "swatch", style: "background:#9a9a9a" }), "ridden"])
     );
   }
 

@@ -1,7 +1,7 @@
 // Cache-first service worker so the itinerary works with spotty signal underground.
 // Bump CACHE when you change any file below.
-const CACHE = "muni-challenge-v5";
-const FILES = ["./", "index.html", "css/styles.css", "js/data.js", "js/plan.js", "js/map.js", "js/app.js", "icon.svg", "manifest.webmanifest"];
+const CACHE = "muni-challenge-v6";
+const FILES = ["./", "index.html", "css/styles.css", "js/data.js", "js/plan.js", "js/network.js", "js/map.js", "js/app.js", "icon.svg", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

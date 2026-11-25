@@ -2,10 +2,10 @@
 
 Ride every San Francisco Muni line in one day, ending at Bus Stop on Union Street.
 
-A small, no-build web app (Leaflet is loaded from a CDN for the map) with the full itinerary and a progress tracker:
+A small, no-build web app (MapLibre GL is loaded from a CDN for the map) with the full itinerary and a progress tracker:
 
 - **A real, timed plan**: every line's board and alight stop is a real SFMTA stop (with a live-arrivals link), with scheduled weekday departure times, and every walk between lines is under ~5 blocks.
-- **Interactive map** (Leaflet + OpenStreetMap): every leg numbered and colored by time block, walking transfers dashed, ridden lines grayed out, the next line highlighted. Tap a line to mark it ridden; tap 📍 on any leg to jump to it. Side-by-side on desktop, List/Map tabs on phones.
+- **Interactive map** (MapLibre GL + OpenFreeMap vector tiles, light and dark): every leg numbered and colored by section of the day, with the *whole* of each line drawn faintly underneath so you can see where it goes. Walking transfers are dashed, ridden lines grayed out, the next line highlighted. Tap a section in the legend to show just that part of the day, tap any line for its times, stops and a mark-ridden button, or tap 📍 on a leg to jump to it. Side-by-side on desktop, List/Map tabs on phones.
 - **Check off lines as you ride.** Progress is saved in your browser (localStorage).
 - **Options** for Owl lines (overnight), the 78X (Chase Center event days only) and the 714 BART Early Bird. The line count updates to match: 50 / 51 / 55 / 56.
 - **"Next" highlight** jumps to the first line you haven't ridden.
@@ -44,6 +44,7 @@ https://www.sfmta.com/reports/gtfs-transit-data (requires accepting SFMTA's lice
 ```sh
 pip install numpy
 python scripts/plan.py path/to/muni_gtfs-current.zip --iters 25000 --restarts 4
+python scripts/build_network.py path/to/muni_gtfs-current.zip   # whole-line shapes for the map
 ```
 
 It prints the full day and any walks over the limit. Progress in the app is keyed by line name, so
