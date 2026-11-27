@@ -88,8 +88,7 @@ def main():
             if r:
                 print(f"  {'→ finish':<34} {r['walk_street_m']:>4} m on foot")
 
-    CACHE.write_text(json.dumps(dict(sorted(cache.items())), indent=0), encoding="utf-8", newline="
-")
+    CACHE.write_text(json.dumps(dict(sorted(cache.items())), indent=0), encoding="utf-8", newline="\n")
     PLAN_JS.write_text(head + "window.MUNI_PLAN = " + json.dumps(plan, separators=(",", ":"), ensure_ascii=False) + ";\n", encoding="utf-8", newline="\n")
     print(f"Wrote {PLAN_JS.relative_to(ROOT)}")
 
