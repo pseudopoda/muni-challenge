@@ -247,3 +247,7 @@ a { color: var(--accent); }
 .mc-mini-when { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mc-mini-when.late { color: var(--risk); }
 .mc-mini-open { flex: none; color: var(--sub); font-size: .8rem; }
+.mc-live b { color: var(--done); font-variant-numeric: tabular-nums; }
+.live-key { display: grid; gap: 4px; margin-top: 10px; }
+.key-form { display: flex; gap: 6px; flex-wrap: wrap; }
+.key-input { flex: 1; min-width: 180px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); font: inherit; font-size: .85rem; }

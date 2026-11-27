@@ -578,6 +578,88 @@
     box.hidden = false;
   }
 
+  // ---- Live arrivals (511.org, with the user's own free key) ----------------------
+  // The key stays in this browser. 511 allows 60 requests an hour per key, so each stop is
+  // asked at most once a minute, only while the page is open, and never more than 50 times an hour.
+
+  const LIVE_KEY = "muni-challenge:511key";
+  const ROUTE_CODE = { "Powell–Hyde Cable Car": "PH", "Powell–Mason Cable Car": "PM", "California Cable Car": "CA", "L Owl": "LOWL", "N Owl": "NOWL" };
+  let apiKey = "";
+  try { apiKey = localStorage.getItem(LIVE_KEY) || ""; } catch (e) { /* ignore */ }
+  const liveStops = {}; // stop code -> { at, visits: [{ line, t, live }] } or { at, error }
+  const liveCalls = []; // request times in the last hour
+
+  const routeCode = (line) => (ROUTE_CODE[line] || line.split(" ")[0]).toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  async function loadLive(code) {
+    if (!apiKey || !code || document.hidden) return;
+    const c = liveStops[code];
+    if (c && (c.loading || Date.now() - c.at < 55000)) return;
+    const t0 = Date.now();
+    while (liveCalls.length && t0 - liveCalls[0] > 3600000) liveCalls.shift();
+    if (liveCalls.length >= 50) return;
+    liveCalls.push(t0);
+    liveStops[code] = Object.assign({}, c, { loading: true });
+    try {
+      const r = await fetch("https://api.511.org/transit/StopMonitoring?agency=SF&format=json&stopcode=" + encodeURIComponent(code) + "&api_key=" + encodeURIComponent(apiKey));
+      if (r.status === 401 || r.status === 403) throw new Error("511 didn’t accept the key");
+      if (r.status === 429) throw new Error("511’s hourly limit reached — back in a bit");
+      if (!r.ok) throw new Error("511 error " + r.status);
+      const j = JSON.parse((await r.text()).replace(/^\uFEFF/, ""));
+      const visits = ((j.ServiceDelivery.StopMonitoringDelivery || {}).MonitoredStopVisit || []).map((v) => {
+        const mj = v.MonitoredVehicleJourney || {}, mc = mj.MonitoredCall || {};
+        const expected = mc.ExpectedDepartureTime || mc.ExpectedArrivalTime;
+        return {
+          line: String(mj.LineRef || "").toUpperCase().replace(/[^A-Z0-9]/g, ""),
+          t: Date.parse(expected || mc.AimedDepartureTime || mc.AimedArrivalTime),
+          live: !!expected && mj.Monitored !== false,
+        };
+      }).filter((v) => !isNaN(v.t));
+      liveStops[code] = { at: Date.now(), visits };
+    } catch (e) {
+      liveStops[code] = { at: Date.now(), error: e instanceof TypeError ? "couldn’t reach 511 (offline?)" : e.message };
+    }
+    renderCard();
+  }
+
+  /** The next few live departures of `leg` from its boarding stop, or null if none known yet. */
+  function liveFor(leg) {
+    const ls = liveStops[leg.board && leg.board.code];
+    if (!ls) return null;
+    if (ls.error) return { error: ls.error };
+    if (!ls.visits) return null;
+    const code = routeCode(leg.line);
+    const list = ls.visits.filter((v) => v.line === code && v.t > Date.now() - 30000).sort((a, b) => a.t - b.t).slice(0, 3);
+    return { list, at: ls.at };
+  }
+
+  const minsAway = (t) => { const m = Math.round((t - Date.now()) / 60000); return m <= 0 ? "now" : m + " min"; };
+
+  function renderLiveKey() {
+    const box = $("liveKey");
+    if (!box) return;
+    if (apiKey) {
+      box.replaceChildren(
+        el("span", { class: "hint", text: "📡 Live arrivals on (511.org key saved on this device)." }),
+        el("button", { type: "button", class: "link-btn", text: "Remove key", onclick: () => setApiKey("") }));
+      return;
+    }
+    const input = el("input", { type: "text", class: "key-input", placeholder: "511.org API key", autocomplete: "off", spellcheck: "false", "aria-label": "511.org API key" });
+    box.replaceChildren(
+      el("form", { class: "key-form", onsubmit: (e) => { e.preventDefault(); setApiKey(input.value.trim()); } }, [
+        input, el("button", { type: "submit", class: "link-btn", text: "Turn on live arrivals" }),
+      ]),
+      el("span", { class: "hint" }, ["Real-time arrivals need a free key from ", el("a", { href: "https://511.org/open-data/token", target: "_blank", rel: "noopener", text: "511.org" }), ". It stays on this device."]));
+  }
+
+  function setApiKey(k) {
+    apiKey = k;
+    try { k ? localStorage.setItem(LIVE_KEY, k) : localStorage.removeItem(LIVE_KEY); } catch (e) { /* ignore */ }
+    for (const c of Object.keys(liveStops)) delete liveStops[c];
+    renderLiveKey();
+    renderCard();
+  }
+
   // ---- Map card: the line you're on (or one you tapped), with backups and actions ----
 
   function departuresAfter(leg, from, n) {
@@ -619,11 +701,16 @@
     };
     const live = info && info.item === it ? info : null;
     const label = it.done ? "✓ Ridden " + clockOf(state.done[it.id]) : it === next ? "Next" : "Later";
+    // Live arrivals for the next line, or any line due within the next ~1.5 h.
+    const wantLive = !!apiKey && !it.done && !leg.manual && !!(leg.board && leg.board.code)
+      && (it === next || (leg.dep_min != null && Math.abs(inFrame(nowMin(), leg.dep_min) - leg.dep_min) < 90));
+    if (wantLive) loadLive(leg.board.code);
     card.classList.toggle("small", cardSmall);
     card.style.setProperty("--block", it.color);
     if (cardSmall) {
       const late = live && (live.delay == null || live.delay > 0);
-      const what = it.done ? label : late && live.catchable ? "catch " + clockMin(live.catchable[0]) : leg.depart || label;
+      const lv = !it.done && wantLive ? liveFor(leg) : null;
+      const what = it.done ? label : lv && lv.list && lv.list.length ? "📡 " + minsAway(lv.list[0].t) : late && live.catchable ? "catch " + clockMin(live.catchable[0]) : leg.depart || label;
       card.replaceChildren(el("button", { type: "button", class: "mc-mini", "aria-label": "Open the card for " + leg.line, onclick: () => setCardSmall(false) }, [
         el("span", { class: "leg-num", text: it.n }),
         el("b", { text: leg.line }),
@@ -643,6 +730,17 @@
         : live.leaveIn > 1 ? "On track · " + (live.walk ? "start walking in " : "be at the stop in ") + Math.round(live.leaveIn) + " min"
         : live.walk ? "Go now" : "Due now";
       status = el("p", { class: "mc-status " + cls, text });
+    }
+
+    let liveRow = null;
+    if (wantLive) {
+      const lv = liveFor(leg);
+      liveRow = el("p", { class: "mc-row mc-live" }, !lv ? [el("span", { class: "muted", text: "📡 Checking live arrivals…" })]
+        : lv.error ? [el("span", { class: "muted", text: "📡 Live: " + lv.error })]
+        : !lv.list.length ? [el("span", { class: "muted", text: "📡 No live predictions for this line here right now." })]
+        : [el("span", { class: "muted", text: "📡 Live: " })].concat(lv.list.map((v, j) => el("span", { class: "dep" }, [
+            j ? " · " : "", el("b", { text: minsAway(v.t) }), " (" + clockOf(v.t) + (v.live ? "" : ", sched.") + ")",
+          ]))));
     }
 
     // Missed it? The departures after the one you can still make (or after the planned one).
@@ -675,6 +773,7 @@
         el("button", { type: "button", class: "mc-arrow", "aria-label": "Next line", text: "›", disabled: k === items.length - 1, onclick: () => step(1) }),
       ]),
       status,
+      liveRow,
       el("p", { class: "mc-row" }, [el("b", { text: when })]),
       el("p", { class: "mc-row" }, [el("span", { class: "muted", text: "Board " }), leg.board.name, " ", stopLink(leg.board), el("span", { class: "muted", text: walkIn })]),
       el("p", { class: "mc-row" }, [el("span", { class: "muted", text: "Get off " }), leg.alight.name]),
@@ -1024,6 +1123,7 @@
   try { savedView = localStorage.getItem(VIEW_KEY) || "map"; } catch (e) { /* ignore */ }
   setView(savedView === "list" ? "list" : "map");
   renderStatic();
+  renderLiveKey();
   render();
   setInterval(renderLive, 30000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) renderLive(); });
