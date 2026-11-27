@@ -235,13 +235,29 @@
     if (on) state.done[id] = Date.now();
     else delete state.done[id];
     saveState();
+    if (on) selectedId = null; // the map card moves on to the next line
     render();
+    if (on) advanceTo(lastItems.find((i) => !i.done));
+  }
+
+  /** After ticking a line off: bring the next one into view (map and list). */
+  function advanceTo(next) {
+    if (!next) return;
+    if (WIDE.matches || document.body.dataset.view === "map") requestAnimationFrame(() => MAP.focus(next.id));
+    if (WIDE.matches || document.body.dataset.view === "list") {
+      const n = $("leg-" + next.id);
+      if (n) setTimeout(() => n.scrollIntoView({ behavior: "smooth", block: "center" }), 250);
+    }
   }
 
   // ---- View (list / map) -------------------------------------------------
 
+  const VIEW_KEY = "muni-challenge:view";
+  let selectedId = null; // leg shown in the map card; null = the next line to ride
+
   function setView(view) {
     document.body.dataset.view = view;
+    try { localStorage.setItem(VIEW_KEY, view); } catch (e) { /* ignore */ }
     document.querySelectorAll(".view-toggle button").forEach((b) => {
       b.setAttribute("aria-selected", String(b.dataset.view === view));
     });
@@ -249,6 +265,8 @@
   }
 
   function showOnMap(id) {
+    selectedId = id;
+    renderCard();
     if (!WIDE.matches) setView("map");
     // Wait a frame so the map has its real size before zooming.
     requestAnimationFrame(() => { MAP.resize(); MAP.focus(id); });
@@ -472,8 +490,9 @@
     renderOffline();
     const lastDay = [...items].reverse().find((i) => !isOwl(i.block));
     const finishPath = PLAN.finishWalk && lastDay && lastDay.id === DAY_LAST ? PLAN.finishWalk.walk_path : null;
-    MAP.update(items, next && next.id, { ...DATA.finish, path: finishPath }, blocks);
+    if (selectedId && !byId[selectedId]) selectedId = null;
     renderLive();
+    MAP.update(items, next && next.id, { ...DATA.finish, path: finishPath }, blocks);
   }
 
   // ---- Live status: on track / behind, and what to catch if you missed it --------
@@ -505,6 +524,7 @@
     document.querySelectorAll(".live-box").forEach((b) => { b.hidden = true; b.replaceChildren(); });
     const strip = $("liveStatus");
     const info = liveInfo(lastItems);
+    renderCard(info);
     if (!info) {
       strip.hidden = true;
       syncTopbarHeight();
@@ -529,7 +549,7 @@
     strip.className = "live-strip " + cls;
     strip.replaceChildren(
       el("span", { text }),
-      el("button", { type: "button", class: "live-go", text: "Show", onclick: () => showLeg(item.id) }),
+      el("button", { type: "button", class: "live-go", text: "Show", onclick: () => { selectedId = null; renderCard(); showLeg(item.id); } }),
       el("button", { type: "button", class: "live-go" + (cls === "late" ? " strong" : ""), text: "Re-plan", onclick: openReplan })
     );
     strip.hidden = false;
@@ -545,6 +565,101 @@
       walk ? el("p", { class: "live-next", text: "Includes the ~" + walk + " min walk to the stop." }) : null,
     ].filter(Boolean));
     box.hidden = false;
+  }
+
+  // ---- Map card: the line you're on (or one you tapped), with backups and actions ----
+
+  function departuresAfter(leg, from, n) {
+    const seen = new Set();
+    return [[leg.dep_min, leg.arr_min]].concat(leg.alts || [])
+      .filter(([d]) => d > from && !seen.has(d) && seen.add(d))
+      .sort((x, y) => x[0] - y[0])
+      .slice(0, n);
+  }
+
+  function renderCard(info) {
+    const card = $("mapCard");
+    if (!card) return;
+    if (info === undefined) info = liveInfo(lastItems);
+    const items = lastItems;
+    const next = items.find((i) => !i.done);
+    const it = items.find((i) => i.id === selectedId) || next;
+    const wasHidden = card.hidden;
+    if (!it) {
+      card.style.removeProperty("--block");
+      card.replaceChildren(
+        el("p", { class: "mc-head" }, [el("b", { text: "🎉 Every line ridden" })]),
+        el("p", { class: "mc-row", text: "Last stop: " + DATA.finish.name + "." }),
+        el("div", { class: "mc-btns" }, [
+          el("button", { type: "button", class: "mc-btn primary", text: "🚶 Walk to the finish", onclick: () => MAP.navigate({ to: DATA.finish.at, name: DATA.finish.name }) }),
+        ]));
+      card.hidden = false;
+      return;
+    }
+    const leg = it.leg;
+    const k = items.indexOf(it);
+    const step = (d) => {
+      const t = items[k + d];
+      if (!t) return;
+      selectedId = t === next ? null : t.id;
+      renderCard();
+      MAP.focus(t.id);
+    };
+    const live = info && info.item === it ? info : null;
+    const label = it.done ? "✓ Ridden " + clockOf(state.done[it.id]) : it === next ? "Next" : "Later";
+
+    let status = null;
+    if (live) {
+      const cls = live.delay == null || live.delay > 0 ? "late" : live.leaveIn > 1 ? "ok" : "soon";
+      const text = live.delay == null ? "No more departures soon in the timetable — check live arrivals."
+        : live.delay > 0 ? "~" + live.delay + " min behind — catch the " + clockMin(live.catchable[0])
+        : live.leaveIn > 1 ? "On track · " + (live.walk ? "start walking in " : "be at the stop in ") + Math.round(live.leaveIn) + " min"
+        : live.walk ? "Go now" : "Due now";
+      status = el("p", { class: "mc-status " + cls, text });
+    }
+
+    // Missed it? The departures after the one you can still make (or after the planned one).
+    let backups = null;
+    if (!it.done && !leg.manual && leg.dep_min != null) {
+      const from = live && live.catchable ? live.catchable[0] : leg.dep_min;
+      const later = departuresAfter(leg, from, 3);
+      backups = el("p", { class: "mc-row mc-alts" }, later.length
+        ? [el("span", { class: "muted", text: "If you miss it: " })].concat(later.map(([d], j) => el("span", { class: "dep" }, [j ? " · " : "", el("b", { text: clockMin(d) })])))
+        : [el("span", { class: "muted", text: "No later one from this stop in the timetable." })]);
+    }
+
+    const when = leg.manual ? "Time depends on the event" : leg.noTrip ? "No more scheduled trips today — check live arrivals"
+      : leg.depart + " → " + leg.arrive + " · " + leg.ride_min + " min";
+    const stopLink = (stop) => stop.code
+      ? el("a", { href: "https://www.sfmta.com/" + encodeURIComponent(stop.code), target: "_blank", rel: "noopener", class: "stop-link", text: "#" + stop.code + " live ↗" })
+      : null;
+    const walkIn = it.walkIn && !it.crossing && it.walkIn.m >= 30 ? " · " + walkText(it.walkIn).toLowerCase() : "";
+    const canReplan = !it.done && !leg.manual;
+
+    card.style.setProperty("--block", it.color);
+    card.replaceChildren(...[
+      el("div", { class: "mc-top" }, [
+        el("button", { type: "button", class: "mc-arrow", "aria-label": "Previous line", text: "‹", disabled: k === 0, onclick: () => step(-1) }),
+        el("p", { class: "mc-head" }, [
+          el("span", { class: "leg-num", text: it.n }),
+          el("b", { text: leg.line }),
+          el("span", { class: "mc-label" + (it.done ? " done" : ""), text: label }),
+        ]),
+        el("button", { type: "button", class: "mc-arrow", "aria-label": "Next line", text: "›", disabled: k === items.length - 1, onclick: () => step(1) }),
+      ]),
+      status,
+      el("p", { class: "mc-row" }, [el("b", { text: when })]),
+      el("p", { class: "mc-row" }, [el("span", { class: "muted", text: "Board " }), leg.board.name, " ", stopLink(leg.board), el("span", { class: "muted", text: walkIn })]),
+      el("p", { class: "mc-row" }, [el("span", { class: "muted", text: "Get off " }), leg.alight.name]),
+      backups,
+      el("div", { class: "mc-btns" }, [
+        el("button", { type: "button", class: "mc-btn" + (it.done ? "" : " primary"), text: it.done ? "Undo" : "✓ Rode it", onclick: () => toggleDone(it.id, !it.done) }),
+        !it.done && leg.board.ll ? el("button", { type: "button", class: "mc-btn", text: "🚶 Walk", onclick: () => walkTo(it) }) : null,
+        canReplan ? el("button", { type: "button", class: "mc-btn" + (live && (live.delay == null || live.delay > 0) ? " warn" : ""), text: "Re-plan", onclick: openReplan }) : null,
+      ]),
+    ].filter(Boolean));
+    card.hidden = false;
+    if (wasHidden) MAP.resize();
   }
 
   function showLeg(id) {
@@ -860,7 +975,14 @@
   });
   $("offlineBtn").addEventListener("click", saveOffline);
 
-  MAP.init($("map"), { onToggle: (id) => toggleDone(id) });
+  MAP.init($("map"), {
+    onToggle: (id) => toggleDone(id),
+    onSelect: (id) => { const nx = lastItems.find((i) => !i.done); selectedId = nx && nx.id === id ? null : id; renderCard(); MAP.focus(id); },
+  });
+  // The map is the main screen on phones; remember if you switch to the list.
+  let savedView = "map";
+  try { savedView = localStorage.getItem(VIEW_KEY) || "map"; } catch (e) { /* ignore */ }
+  setView(savedView === "list" ? "list" : "map");
   renderStatic();
   render();
   setInterval(renderLive, 30000);

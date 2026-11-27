@@ -28,7 +28,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--s
 :root { --topbar-h: 54px; }
 .list-pane { padding: 0 16px 60px; max-width: 900px; margin: 0 auto; width: 100%; }
 .map-pane { position: relative; height: calc(100vh - var(--topbar-h)); height: calc(100dvh - var(--topbar-h)); }
-#map { position: absolute; inset: 0; background: var(--tag-bg); }
+#map { position: absolute; inset: 0; z-index: 0; background: var(--tag-bg); }
 body[data-view="list"] .map-pane { display: none; }
 body[data-view="map"] .list-pane { display: none; }
 @media (min-width: 1000px) {
@@ -112,7 +112,8 @@ a { color: var(--accent); }
 }
 
 /* Map */
-.map-legend { position: absolute; left: 10px; bottom: 28px; z-index: 3; width: min(250px, calc(100% - 20px)); }
+.map-legend { position: absolute; left: 10px; top: 10px; z-index: 3; width: min(250px, calc(100% - 70px)); }
+.map-pane:has(.nav-banner:not([hidden])) .map-legend { display: none; }
 .legend-panel { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.18); font-size: .8rem; }
 .legend-panel summary { cursor: pointer; padding: 7px 12px; font-weight: 700; font-size: .72rem; letter-spacing: .05em; text-transform: uppercase; color: var(--sub); }
 .legend-showing { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--accent); }
@@ -214,3 +215,25 @@ a { color: var(--accent); }
 .primary-btn { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 14px; font: inherit; font-size: .9rem; font-weight: 600; cursor: pointer; }
 .small { font-size: .78rem; }
 .live-go.strong { color: var(--risk); background: var(--card); font-weight: 700; }
+
+/* Map card: the line you're on, its backups, and what to do */
+.map-card { position: absolute; left: 10px; right: 10px; bottom: 30px; z-index: 4; max-width: 440px; margin: 0 auto; background: var(--card); color: var(--ink); border: 1px solid var(--line); border-top: 4px solid var(--block, var(--accent)); border-radius: 12px; box-shadow: 0 3px 14px rgba(0,0,0,.25); padding: 8px 10px 10px; font-size: .86rem; display: grid; gap: 3px; }
+.map-card p { margin: 0; }
+.mc-top { display: flex; align-items: center; gap: 6px; }
+.mc-head { flex: 1; display: flex; align-items: center; gap: 7px; min-width: 0; font-size: .95rem; }
+.mc-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-head .leg-num { flex: none; }
+.mc-label { margin-left: auto; flex: none; font-size: .72rem; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+.mc-label.done { color: var(--done); text-transform: none; letter-spacing: 0; }
+.mc-arrow { flex: none; width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--tag-bg); color: var(--ink); font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.mc-arrow:disabled { opacity: .35; cursor: default; }
+.mc-row { line-height: 1.35; }
+.mc-alts .dep b { font-variant-numeric: tabular-nums; }
+.mc-status { font-weight: 700; border-radius: 6px; padding: 3px 8px; }
+.mc-status.ok { background: color-mix(in srgb, var(--done) 14%, var(--card)); color: var(--done); }
+.mc-status.soon { background: color-mix(in srgb, var(--accent) 16%, var(--card)); color: var(--accent); }
+.mc-status.late { background: var(--risk-bg); color: var(--risk); }
+.mc-btns { display: flex; gap: 6px; margin-top: 5px; }
+.mc-btn { flex: 1; min-height: 40px; border-radius: 9px; border: 1px solid var(--line); background: var(--tag-bg); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
+.mc-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.mc-btn.warn { background: var(--risk-bg); border-color: var(--risk); color: var(--risk); }

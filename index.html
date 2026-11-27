@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <link rel="stylesheet" href="css/styles.css">
 </head>
-<body data-view="list">
+<body data-view="map">
   <header class="topbar">
     <div class="topbar-inner">
       <div class="progress-text"><strong id="doneCount">0</strong> / <span id="totalCount">0</span> lines</div>
@@ -19,8 +19,8 @@
         <div class="progress-fill" id="progressFill"></div>
       </div>
       <div class="view-toggle" role="tablist" aria-label="View">
-        <button type="button" role="tab" data-view="list" aria-selected="true">List</button>
-        <button type="button" role="tab" data-view="map" aria-selected="false">Map</button>
+        <button type="button" role="tab" data-view="map" aria-selected="true">Map</button>
+        <button type="button" role="tab" data-view="list" aria-selected="false">List</button>
       </div>
       <button class="link-btn" id="jumpNext" type="button">Next ↓</button>
     </div>
@@ -79,6 +79,7 @@
     <aside class="map-pane" aria-label="Route map">
       <div id="map"></div>
       <div class="map-legend" id="mapLegend"></div>
+      <div class="map-card" id="mapCard" hidden></div>
     </aside>
   </div>
 

@@ -24,6 +24,7 @@
   let map = null;
   let el = null;
   let onToggle = () => {};
+  let onSelect = null;        // tap a line or stop: app shows it in its card instead of a popup
   let ready = false;          // our sources/layers exist on the current style
   let fellBack = false;       // basemap unreachable: plain background instead
   let fitted = false;
@@ -70,6 +71,7 @@
       return false;
     }
     onToggle = opts.onToggle;
+    onSelect = opts.onSelect || null;
     map = new maplibregl.Map({
       container: el,
       style: styleUrl(),
@@ -114,12 +116,12 @@
     // Tap the ridden part of a line, or (when shown) anywhere on the whole line.
     map.on("click", "hit", (e) => {
       const f = e.features[0];
-      if (f) openPopup(f.properties.id, e.lngLat);
+      if (f) pick(f.properties.id, e.lngLat);
     });
     map.on("click", "hit-network", (e) => {
       if (map.queryRenderedFeatures(e.point, { layers: ["hit"] }).length) return; // the ridden part wins
       const f = e.features[0];
-      if (f && prefs.network) openPopup(f.properties.id, e.lngLat);
+      if (f && prefs.network) pick(f.properties.id, e.lngLat);
     });
     ["hit", "hit-network"].forEach((layer) => {
       map.on("mouseenter", layer, () => { map.getCanvas().style.cursor = "pointer"; });
@@ -297,7 +299,7 @@
       node.textContent = it.n;
       node.title = it.n + ". " + it.leg.line;
       node.setAttribute("aria-label", "Leg " + it.n + ": " + it.leg.line);
-      node.addEventListener("click", (e) => { e.stopPropagation(); openPopup(it.id, lngLat(it.a)); });
+      node.addEventListener("click", (e) => { e.stopPropagation(); pick(it.id, lngLat(it.a)); });
       markers.push(new maplibregl.Marker({ element: node }).setLngLat(lngLat(it.a)).addTo(map));
     });
     if (finish) {
@@ -332,6 +334,11 @@
       (leg.board && leg.board.ll ? '<button type="button" class="link-btn" data-walk="1">🚶 Walk here</button>' : "") + "</div>" +
       "</div>"
     );
+  }
+
+  function pick(id, at) {
+    if (onSelect) onSelect(id);
+    else openPopup(id, at);
   }
 
   function openPopup(id, at) {
@@ -404,9 +411,11 @@
   // Keep the route clear of the legend: beside it on wide maps, above it on narrow ones.
   function padding() {
     const legend = document.getElementById("mapLegend");
+    const card = document.getElementById("mapCard");
     const w = legend ? legend.offsetWidth : 0, h = legend ? legend.offsetHeight : 0;
-    if (el.clientWidth - w > 360) return { top: 30, left: w + 30, right: 50, bottom: 30 };
-    return { top: 30, left: 20, right: 50, bottom: Math.min(h + 20, el.clientHeight / 2) };
+    const bottom = Math.min(card && !card.hidden ? card.offsetHeight + 50 : 30, el.clientHeight / 2);
+    if (el.clientWidth - w > 360) return { top: 30, left: w + 30, right: 50, bottom };
+    return { top: Math.min(h + 20, el.clientHeight / 3), left: 20, right: 50, bottom };
   }
 
   function fitTo(items, animate) {
@@ -432,7 +441,9 @@
     if (!map || !it || !it.a) return;
     if (focusBlock && focusBlock !== it.block) setFocusBlock(null);
     if (nav && follow) { follow = false; renderBanner(); } // stop snapping back to you
+    if (popup) popup.remove();
     fitTo([it], true);
+    if (onSelect) return; // the app's card shows the details
     const path = it.path || [it.a, it.b];
     openPopup(id, lngLat(path[Math.floor(path.length / 2)]));
   }
