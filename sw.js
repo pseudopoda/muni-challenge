@@ -1,9 +1,9 @@
 // Service worker so the itinerary and map work with spotty signal underground.
 // Bump CACHE when you change any app file below.
-const CACHE = "muni-challenge-v8";
+const CACHE = "muni-challenge-v9";
 const MAP_CACHE = "muni-map-v1"; // basemap tiles/fonts/styles + map library; kept across app updates
 const MAP_CACHE_MAX = 4000;
-const FILES = ["./", "index.html", "css/styles.css", "js/data.js", "js/plan.js", "js/network.js", "js/map.js", "js/app.js", "icon.svg", "manifest.webmanifest"];
+const FILES = ["./", "index.html", "css/styles.css", "js/data.js", "js/plan.js", "js/network.js", "js/map.js", "js/replan.js", "js/replan-data.js", "js/app.js", "icon.svg", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

@@ -267,7 +267,7 @@
     });
 
     if (finish) {
-      const last = [...items].reverse().find((l) => l.block !== "owl");
+      const last = [...items].reverse().find((l) => !String(l.block).startsWith("owl"));
       if (last && !last.leg.manual) {
         const path = finish.path || [last.b, finish.at];
         walks.push({ type: "Feature", properties: { long: false, dim: dimmed(last.block) }, geometry: { type: "LineString", coordinates: path.map(lngLat) } });
@@ -470,7 +470,7 @@
   }
 
   function onPosition(pos) {
-    me = { ll: [pos.coords.latitude, pos.coords.longitude], acc: pos.coords.accuracy };
+    me = { ll: [pos.coords.latitude, pos.coords.longitude], acc: pos.coords.accuracy, at: Date.now() };
     if (!meMarker) {
       const dot = document.createElement("div");
       dot.className = "me-dot";
@@ -684,5 +684,19 @@
     return saved;
   }
 
-  window.MuniMap = { init, update, focus, resize, navigate, saveOffline };
+  /** Your position if known within the last `maxMin` minutes; otherwise ask once (null if unavailable). */
+  async function getLocation(maxMin) {
+    if (me && Date.now() - me.at < maxMin * 60000) return me.ll;
+    if (!navigator.geolocation) return null;
+    try {
+      const pos = await new Promise((ok, fail) =>
+        navigator.geolocation.getCurrentPosition(ok, fail, { enableHighAccuracy: true, timeout: 8000, maximumAge: maxMin * 60000 }));
+      if (map) onPosition(pos);
+      return [pos.coords.latitude, pos.coords.longitude];
+    } catch (e) {
+      return null;
+    }
+  }
+
+  window.MuniMap = { init, update, focus, resize, navigate, saveOffline, getLocation };
 })();

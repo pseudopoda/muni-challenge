@@ -6,6 +6,7 @@ A small, no-build web app (MapLibre GL is loaded from a CDN for the map) with th
 
 - **A real, timed plan**: every line's board and alight stop is a real SFMTA stop (with a live-arrivals link), with scheduled weekday departure times, and every walk between lines is under ~5 blocks. Every connection leaves a few minutes spare (more before the infrequent lines), so one late bus doesn't sink the day.
 - **Live "on track / behind" bar** on the day: compares the clock with the plan and tells you when to start walking, or which bus you can still catch if you're running late. Each leg also lists its other departures.
+- **Re-plan on the fly** after a missed connection: "Re-plan" (in the status bar, or "Re-plan from now" in the plan check) works out the best way to ride the lines you have left from where you are — your location, or where your last line dropped you. It re-times and re-orders them, can ride a line from different stops, and when a gap is too far to walk suggests hopping on any Muni. It shows the new finish time next to "same order, new times"; you pick, and can go back to the original plan any time.
 - **Walking directions inside the app** (🚶 on any leg, or "Walk here" on the map): a blue dot for you and a dotted street route to the stop, Google-Maps style, with distance, minutes and how much time you have before the bus. Planned transfers are drawn along the streets too.
 - **Interactive map** (MapLibre GL + OpenFreeMap vector tiles, light and dark): every leg numbered and colored by section of the day, with the *whole* of each line drawn faintly underneath so you can see where it goes. Walking transfers are dashed, ridden lines grayed out, the next line highlighted. Tap a section in the legend to show just that part of the day, tap any line for its times, stops and a mark-ridden button, or tap 📍 on a leg to jump to it. Side-by-side on desktop, List/Map tabs on phones.
 - **Check off lines as you ride.** Progress and the time you rode each line are saved in your browser (localStorage). The finish card shows your stats and makes a **shareable summary image** of your day.
@@ -49,6 +50,10 @@ python scripts/plan.py path/to/muni_gtfs-current.zip --iters 25000 --restarts 4
 python scripts/walks.py                                          # street walking routes (needs internet)
 python scripts/build_network.py path/to/muni_gtfs-current.zip   # whole-line shapes for the map
 ```
+
+`plan.py` also writes [`js/replan-data.js`](js/replan-data.js): for each day line, up to 12 stop pairs
+near other lines (the planned pair first) with every weekday trip, which the in-app re-planner
+([`js/replan.js`](js/replan.js)) uses on the day.
 
 `walks.py` also saves each street distance to `scripts/walk_cache.json`, which `plan.py` reads on
 its next run. Some transfers look short on a map but are long on foot (around a freeway or up a

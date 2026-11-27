@@ -16,7 +16,7 @@
   // ---- State -------------------------------------------------------------
 
   function loadState() {
-    const fallback = { options: { owl: false, event: false, earlybird: false }, done: {}, offlineSaved: null };
+    const fallback = { options: { owl: false, event: false, earlybird: false }, done: {}, offlineSaved: null, override: null };
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return fallback;
@@ -25,6 +25,7 @@
         options: Object.assign({}, fallback.options, parsed.options),
         done: parsed.done || {},
         offlineSaved: parsed.offlineSaved || null,
+        override: parsed.override || null,
       };
     } catch (e) {
       return fallback;
@@ -94,17 +95,124 @@
     return h ? h + " h " + m + " min" : m + " min";
   }
 
+  const isOwl = (blockId) => String(blockId).startsWith("owl");
+
+  // The original plan's order: which leg comes before which, and the measured street walk
+  // from it (so a re-plan that keeps a pair together can reuse the real walking distance).
+  const ORIG_PREV = {}, ORIG_STREET = {};
+  for (const owl of [true, false]) {
+    let prev = null;
+    PLAN.blocks.filter((b) => isOwl(b.id) === owl).forEach((b) => b.legs.forEach((l) => {
+      ORIG_PREV[legId(l)] = prev;
+      ORIG_STREET[legId(l)] = l.walk_street_m;
+      prev = legId(l);
+    }));
+  }
+  const DAY_LAST = (() => { const d = PLAN.blocks.filter((b) => !isOwl(b.id)); const b = d[d.length - 1]; return b ? legId(b.legs[b.legs.length - 1]) : null; })();
+  // A saved re-plan only applies to the plan it was made from.
+  const PLAN_SIG = PLAN.feed + "|" + PLAN.finishAt + "|" + PLAN.blocks.reduce((n, b) => n + b.legs.length, 0);
+  const REPLAN_COLOR = "#0b7a75";
+
+  /** Backup departures around a planned one, from the leg's full timetable. */
+  function altsAround(times, dep) {
+    return (times || []).filter(([d]) => d >= dep - 30 && d <= dep + 120).slice(0, 12);
+  }
+
+  /** Stop pairs the re-planner may use for a line: the planned pair first, then others. */
+  const CANDS = {};
+  function candidates(leg) {
+    if (!CANDS[leg.line]) {
+      const data = (window.MUNI_REPLAN || {})[leg.line];
+      CANDS[leg.line] = data && data.length
+        ? data.map((c) => ({ board: c.b, alight: c.s, times: window.MuniReplan.decode(c.t) }))
+        : [{ board: leg.board, alight: leg.alight, times: leg.times || [] }];
+    }
+    return CANDS[leg.line];
+  }
+
+  /** The stretch of a line's full route between two stops, for drawing a re-planned leg. */
+  function clipPath(line, a, b) {
+    let best = null;
+    for (const shape of (window.MUNI_NETWORK || {})[line] || []) {
+      let ia = 0, ib = 0, da = Infinity, db = Infinity;
+      shape.forEach((p, i) => {
+        const x = meters(p, a), y = meters(p, b);
+        if (x < da) { da = x; ia = i; }
+        if (y < db) { db = y; ib = i; }
+      });
+      if (ia < ib && (!best || da + db < best.d)) best = { d: da + db, path: [a].concat(shape.slice(ia, ib + 1), [b]) };
+    }
+    return best && best.d < 300 ? best.path : [a, b];
+  }
+
+  function activeOverride() {
+    const ov = state.override;
+    if (!ov || ov.sig !== PLAN_SIG) return null;
+    if (ov.segment === "owl" && !isOptionOn("owl")) return null;
+    return ov;
+  }
+
+  function finishAt() {
+    const ov = activeOverride();
+    return ov && ov.segment === "day" ? ov.finishAt : PLAN.finishAt;
+  }
+
+  /** Move the re-planned legs into a new section with their new order and times. */
+  function applyOverride(blocks, ov) {
+    const inSeg = (b) => isOwl(b.id) === (ov.segment === "owl");
+    const byId = {};
+    blocks.forEach((b) => { if (inSeg(b)) b.legs.forEach((l) => { byId[legId(l)] = l; }); });
+    const ids = ov.order.filter((id) => byId[id]);
+    const moved = new Set(ids);
+    const kept = blocks.map((b) => (inSeg(b) ? { ...b, legs: b.legs.filter((l) => !moved.has(legId(l))) } : b)).filter((b) => b.legs.length);
+    let prev = ov.prevId || null, prevCand = 0;
+    const legs = ids.map((id) => {
+      const l = byId[id], t = ov.times[id];
+      const c = t ? t[3] || 0 : 0;
+      const cd = candidates(l)[c] || candidates(l)[0];
+      let out;
+      if (!t) {
+        out = { ...l, dep_min: null, arr_min: null, depart: "—", arrive: "—", ride_min: null, wait_min: 0, alts: [], noTrip: true };
+      } else {
+        out = { ...l, dep_min: t[0], arr_min: t[1], depart: clockMin(t[0]), arrive: clockMin(t[1]), ride_min: t[1] - t[0], wait_min: t[2], alts: altsAround(cd.times, t[0]), hopMin: t[4] || 0 };
+        if (c > 0) {
+          // Riding this line from different stops than planned.
+          Object.assign(out, { board: cd.board, alight: cd.alight, times: cd.times, path: clipPath(l.line, cd.board.ll, cd.alight.ll), stops: null, otherStops: true });
+        }
+      }
+      if (ORIG_PREV[id] !== prev || c > 0 || prevCand > 0) { delete out.walk_path; delete out.walk_street_m; delete out.walk_min; }
+      prev = id;
+      prevCand = c;
+      return out;
+    });
+    if (legs.length) {
+      const timed = legs.filter((l) => !l.noTrip);
+      const block = {
+        id: ov.segment === "owl" ? "owl-re" : "re",
+        color: REPLAN_COLOR,
+        time: timed.length ? timed[0].depart + "–" + timed[timed.length - 1].arrive : "",
+        title: "Re-planned at " + clockMin(ov.at),
+        legs,
+        replanned: true,
+      };
+      kept.splice(ov.segment === "owl" ? kept.filter((b) => isOwl(b.id)).length : kept.length, 0, block);
+    }
+    return kept;
+  }
+
   /** Planned visible blocks for the current options, with line metadata merged in. */
   function visibleBlocks() {
-    const blocks = PLAN.blocks
+    let blocks = PLAN.blocks
       .filter((b) => isOptionOn(b.option))
       .map((b) => ({
         ...b,
         legs: b.legs
-          .map((l) => ({ ...META[l.line], ...l, option: l.option || (META[l.line] || {}).option }))
+          .map((l) => ({ ...META[l.line], ...l, option: l.option || (META[l.line] || {}).option, alts: altsAround(l.times, l.dep_min) }))
           .filter((l) => isOptionOn(l.option === "owl" ? null : l.option)),
       }))
       .filter((b) => b.legs.length);
+    const ov = activeOverride();
+    if (ov) blocks = applyOverride(blocks, ov);
 
     // Lines that aren't in SFMTA's schedule data (78X): slot in after the nearest planned leg.
     for (const [line, geo] of Object.entries(DATA.manual || {})) {
@@ -213,6 +321,7 @@
 
   function walkText(w) {
     if (!w) return null;
+    if (w.hop) return "Too far to walk — hop on any Muni toward it (~" + (w.m / 1000).toFixed(1) + " km, ≈" + w.min + " min)";
     if (w.m < 30) return "Same stop";
     return "Walk ~" + w.m + " m (≈" + w.min + " min)";
   }
@@ -220,6 +329,7 @@
   /** Walk into a leg: street route and time when walks.py has run, else straight-line estimate. */
   function walkInfo(leg, straight) {
     if (straight == null) return null;
+    if (leg.hopMin) return { m: straight, min: leg.hopMin, hop: true, path: null };
     if (leg.walk_street_m != null) return { m: leg.walk_street_m, min: leg.walk_min, path: leg.walk_path };
     return { m: straight, min: Math.max(1, Math.round((straight * 1.25) / WALK_M_PER_MIN)), path: null };
   }
@@ -246,6 +356,8 @@
 
     const when = leg.manual
       ? "Time depends on the event"
+      : leg.noTrip
+      ? "No more scheduled trips from this stop today — check live arrivals"
       : leg.depart + " → " + leg.arrive + " · " + leg.ride_min + " min" + (leg.stops ? ", " + leg.stops + (leg.stops === 1 ? " stop" : " stops") : "");
 
     const route = el("dl", { class: "leg-route" }, [
@@ -294,7 +406,7 @@
       const id = legId(leg);
       const prev = items[items.length - 1];
       // From the Owl block you walk over to the first cable car; that's not a timed transfer.
-      const crossing = prev && prev.block === "owl" && b.id !== "owl";
+      const crossing = prev && isOwl(prev.block) && !isOwl(b.id);
       const walk = prev ? meters(prev.b, leg.board.ll) : null;
       items.push({
         leg, id, block: b.id, color: b.color, done: !!state.done[id], n: items.length + 1,
@@ -303,7 +415,7 @@
       });
       const it = items[items.length - 1];
       // Over the limit in a straight line, or much longer on foot (e.g. around a freeway).
-      it.longWalk = !crossing && walk != null && (walk > WALK_MAX_M || (it.walkIn && it.walkIn.m > STREET_MAX_M));
+      it.longWalk = !crossing && walk != null && !(it.walkIn && it.walkIn.hop) && (walk > WALK_MAX_M || (it.walkIn && it.walkIn.m > STREET_MAX_M));
       if (crossing) {
         it.crossing = true;
         it.walkIn = { m: walk, min: Math.max(1, Math.round((walk * 1.25) / WALK_M_PER_MIN)) };
@@ -315,10 +427,12 @@
         it.nextWalk = nx.walkIn;
         it.nextLine = nx.leg.line + (nx.crossing && nx.leg.depart ? " (leaves " + nx.leg.depart + ")" : "");
       }
-      else if (it.block !== "owl" && (!nx || nx.block === "owl")) {
+      else if (!isOwl(it.block) && (!nx || isOwl(nx.block))) {
         const fw = PLAN.finishWalk;
         const m = meters(it.b, DATA.finish.at);
-        it.nextWalk = fw && !it.leg.manual ? { m: fw.walk_street_m, min: fw.walk_min } : { m, min: Math.max(1, Math.round(m * 1.25 / WALK_M_PER_MIN)) };
+        it.nextWalk = fw && !it.leg.manual && it.id === DAY_LAST ? { m: fw.walk_street_m, min: fw.walk_min }
+          : m > WALK_MAX_M && activeOverride() ? { m, min: Math.round(8 + (m * 1.3) / 250 + 4), hop: true }
+          : { m, min: Math.max(1, Math.round(m * 1.25 / WALK_M_PER_MIN)) };
         it.nextLine = null;
       }
     });
@@ -356,14 +470,16 @@
     renderFinish(items, total, doneCount);
     renderPlanCheck(items);
     renderOffline();
-    MAP.update(items, next && next.id, { ...DATA.finish, path: PLAN.finishWalk && PLAN.finishWalk.walk_path }, blocks);
+    const lastDay = [...items].reverse().find((i) => !isOwl(i.block));
+    const finishPath = PLAN.finishWalk && lastDay && lastDay.id === DAY_LAST ? PLAN.finishWalk.walk_path : null;
+    MAP.update(items, next && next.id, { ...DATA.finish, path: finishPath }, blocks);
     renderLive();
   }
 
   // ---- Live status: on track / behind, and what to catch if you missed it --------
 
   function liveInfo(items) {
-    const i = items.findIndex((it) => !it.done);
+    const i = items.findIndex((it) => !it.done && !it.leg.manual && it.leg.dep_min != null);
     const next = items[i];
     if (!next || next.leg.manual || next.leg.dep_min == null) return null;
     const now = inFrame(nowMin(), next.leg.dep_min);
@@ -413,7 +529,8 @@
     strip.className = "live-strip " + cls;
     strip.replaceChildren(
       el("span", { text }),
-      el("button", { type: "button", class: "live-go", text: "Show", onclick: () => showLeg(item.id) })
+      el("button", { type: "button", class: "live-go", text: "Show", onclick: () => showLeg(item.id) }),
+      el("button", { type: "button", class: "live-go" + (cls === "late" ? " strong" : ""), text: "Re-plan", onclick: openReplan })
     );
     strip.hidden = false;
     syncTopbarHeight();
@@ -433,6 +550,134 @@
   function showLeg(id) {
     if (document.body.dataset.view === "map" && !WIDE.matches) MAP.focus(id);
     else { const n = $("leg-" + id); if (n) n.scrollIntoView({ behavior: "smooth", block: "center" }); }
+  }
+
+  // ---- Re-plan on the fly ---------------------------------------------------------
+
+  /** Everything the re-planner needs, from where you are now. */
+  async function replanContext() {
+    const items = lastItems;
+    const next = items.find((it) => !it.done && !it.leg.manual && candidates(it.leg).some((c) => c.times.length));
+    if (!next) return null;
+    const owlSeg = isOwl(next.block);
+    const seg = items.filter((it) => isOwl(it.block) === owlSeg);
+    const remaining = seg.filter((it) => !it.done && !it.leg.manual && candidates(it.leg).some((c) => c.times.length));
+    const startT = inFrame(nowMin(), next.leg.dep_min != null ? next.leg.dep_min : candidates(next.leg)[0].times[0][0]);
+
+    // Where are you? Your location if the phone will tell us, else where your last line dropped you.
+    const gps = MAP.getLocation ? await MAP.getLocation(5) : null;
+    // Most recently checked off (ties: the later one in the itinerary).
+    const last = seg.map((it, i) => ({ it, i })).filter((x) => x.it.done)
+      .sort((x, y) => state.done[y.it.id] - state.done[x.it.id] || y.i - x.i).map((x) => x.it)[0];
+    let startLL = null, from = "the first stop", firstIsTransfer = false, prevId = null;
+    if (gps) {
+      startLL = gps;
+      from = "your current location";
+    } else if (last) {
+      startLL = last.leg.alight.ll;
+      from = "where the " + last.leg.line + " dropped you (" + last.leg.alight.name + ")";
+      firstIsTransfer = true;
+      prevId = last.id;
+    }
+    const legs = remaining.map((it) => ({
+      id: it.id, line: it.leg.line, risk: !!it.leg.risk, cands: candidates(it.leg),
+      knownFrom: ORIG_PREV[it.id], knownStreetM: ORIG_STREET[it.id],
+    }));
+    return {
+      segment: owlSeg ? "owl" : "day", legs, startT, from, prevId,
+      ctx: { startT, startLL, endLL: owlSeg ? null : DATA.finish.at, firstIsTransfer, prevId },
+    };
+  }
+
+  function overrideFrom(c, order, res) {
+    const times = {};
+    res.steps.forEach((st) => { times[c.legs[st.idx].id] = [st.dep, st.arr, st.wait, st.cand, st.hopMin]; });
+    const ids = order.filter((i) => !res.missing.includes(i)).map((i) => c.legs[i].id).concat(res.missing.map((i) => c.legs[i].id));
+    return { sig: PLAN_SIG, segment: c.segment, at: c.startT, prevId: c.prevId, order: ids, times, finishAt: clockMin(res.end), missing: res.missing.map((i) => c.legs[i].line) };
+  }
+
+  async function openReplan() {
+    const dlg = $("replanDlg");
+    dlg.replaceChildren(el("p", { class: "muted", text: "Working out the best way from here…" }));
+    if (!dlg.open) dlg.showModal();
+    const c = await replanContext();
+    if (!c) {
+      dlg.replaceChildren(el("p", { text: "Nothing left to re-plan — every line with a timetable is ridden." }), el("button", { type: "button", class: "link-btn", text: "Close", onclick: () => dlg.close() }));
+      return;
+    }
+    const R = window.MuniReplan;
+    R.lastContext = c; // for debugging in the console
+    const same = c.legs.map((_, i) => i);
+    const keep = R.evaluate(c.legs, same, c.ctx);
+    const status = el("p", { class: "muted", text: "Trying different orders and stops…" });
+    dlg.replaceChildren(status);
+    const opt = await R.optimizeFor(c.legs, same, c.ctx, 6000, (f, res) => {
+      status.textContent = "Trying different orders and stops… " + Math.round(f * 100) + "% · best so far ~" + clockMin(res.end);
+    });
+    const best = opt.result.cost < keep.cost - 0.5 ? opt : { order: same, result: keep };
+    const reordered = best.order.some((v, i) => v !== same[i]);
+    const changedStops = best.result.steps.filter((st) => st.cand > 0).length;
+    const plannedEnd = c.segment === "day" ? finishAt() : null;
+
+    const missingNote = (res) => res.missing.length
+      ? el("p", { class: "warn-line", text: "Can’t fit today from the planned stops: " + res.missing.map((i) => c.legs[i].line).join(", ") + ". Check live arrivals or another stop." })
+      : null;
+    const endText = (res) => (c.segment === "day" ? "at Bus Stop ~" : "done ~") + clockMin(res.end);
+    const hops = (res) => res.steps.filter((st) => st.hop).length;
+    const gain = (res) => {
+      const fits = keep.missing.length - res.missing.length;
+      if (fits > 0) return "fits " + fits + " more line" + (fits === 1 ? "" : "s") + " than keeping the order";
+      const d = Math.round(keep.end - res.end);
+      return d >= 1 ? d + " min sooner than keeping the order" : "about the same time as keeping the order";
+    };
+
+    const preview = el("ol", { class: "replan-list" }, best.result.steps.map((st) => {
+      const leg = c.legs[st.idx];
+      const cd = leg.cands[st.cand];
+      const moved = reordered && best.order.indexOf(st.idx) !== st.idx;
+      return el("li", { class: moved || st.cand > 0 ? "moved" : null }, [
+        el("b", { text: clockMin(st.dep) }), " " + leg.line,
+        el("span", { class: "muted", text: " · " + cd.board.name + (st.hop ? " · hop on Muni ~" + st.hopMin + " min" : st.walkM > 30 ? " · walk " + st.walkM + " m" : "") + (st.wait >= 10 ? " · wait " + st.wait + " min" : "") }),
+        moved ? el("span", { class: "tag moved-tag", text: "moved" }) : null,
+        st.cand > 0 ? el("span", { class: "tag moved-tag", text: "other stop" }) : null,
+      ]);
+    }));
+
+    const use = (order, res) => () => {
+      state.override = overrideFrom(c, order, res);
+      saveState();
+      dlg.close();
+      render();
+      const first = document.querySelector("#block-" + (c.segment === "owl" ? "owl-re" : "re"));
+      if (first) first.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+
+    dlg.replaceChildren(...[
+      el("h2", { class: "card-title", text: "Re-plan from here" }),
+      el("p", { class: "muted", text: "From " + c.from + " at " + clockMin(c.startT) + " · " + c.legs.length + " line" + (c.legs.length === 1 ? "" : "s") + " left" + (plannedEnd ? " · plan said ~" + plannedEnd : "") }),
+      reordered
+        ? el("div", { class: "replan-opt best" }, [
+            el("p", {}, [el("b", { text: "New order: " + endText(best.result) }), " (" + gain(best.result) + (changedStops ? "; " + changedStops + " line" + (changedStops === 1 ? "" : "s") + " from different stops" : "") + (hops(best.result) ? "; " + hops(best.result) + " hop" + (hops(best.result) === 1 ? "" : "s") + " on any Muni" : "") + ")"]),
+            missingNote(best.result),
+          ])
+        : el("div", { class: "replan-opt best" }, [el("p", {}, [el("b", { text: "Keep the order, new times: " + endText(keep) })]), missingNote(keep)]),
+      reordered ? el("div", { class: "replan-opt" }, [el("p", { text: "Same order, new times: " + endText(keep) }), missingNote(keep)]) : null,
+      el("details", { class: "replan-preview", open: true }, [el("summary", { text: reordered ? "New order" : "New times" }), preview]),
+      el("p", { class: "muted small", text: "Uses the weekday timetable and a choice of stops on each line, with the usual few minutes spare. Walks stay within ~5 blocks; anything farther is a hop on whatever Muni gets you there (times are rough estimates)." }),
+      el("div", { class: "replan-btns" }, [
+        el("button", { type: "button", class: "primary-btn", text: reordered ? "Use new order" : "Use new times", onclick: use(best.order, best.result) }),
+        reordered ? el("button", { type: "button", class: "link-btn", text: "Keep order, new times", onclick: use(same, keep) }) : null,
+        activeOverride() ? el("button", { type: "button", class: "link-btn danger", text: "Back to original plan", onclick: () => { clearOverride(); dlg.close(); } }) : null,
+        el("button", { type: "button", class: "link-btn", text: "Search again", title: "The search is random; another go can find a better route", onclick: openReplan }),
+        el("button", { type: "button", class: "link-btn danger", text: "Cancel", onclick: () => dlg.close() }),
+      ]),
+    ].filter(Boolean));
+  }
+
+  function clearOverride() {
+    state.override = null;
+    saveState();
+    render();
   }
 
   // ---- Finish card: stats and a shareable summary ---------------------------------
@@ -456,7 +701,7 @@
     $("finishText").textContent =
       doneCount === total
         ? "You did it — all " + total + " lines. 🎉"
-        : "Planned arrival ~" + PLAN.finishAt + " · " + total + " lines · " + (total - doneCount) + " to go.";
+        : "Planned arrival ~" + finishAt() + " · " + total + " lines · " + (total - doneCount) + " to go.";
     const box = $("finishStats");
     if (!s.done) { box.hidden = true; return; }
     box.hidden = false;
@@ -536,8 +781,8 @@
   // ---- Plan check / offline -------------------------------------------------------
 
   function renderPlanCheck(items) {
-    const day = items.filter((i) => i.block !== "owl" && !i.leg.manual);
-    const walks = items.filter((i) => i.walk != null && !i.crossing);
+    const day = items.filter((i) => !isOwl(i.block) && !i.leg.manual);
+    const walks = items.filter((i) => i.walk != null && !i.crossing && !(i.walkIn && i.walkIn.hop));
     const longest = walks.reduce((m, i) => Math.max(m, i.walkIn ? i.walkIn.m : i.walk), 0);
     const long = items.filter((i) => i.longWalk);
     const transfers = day.slice(1).filter((i) => i.leg.wait_min != null);
@@ -547,13 +792,18 @@
     box.replaceChildren(
       el("h2", { class: "card-title", text: long.length ? "⚠ Plan check" : "✓ Plan check" }),
       el("ul", {}, [
-        el("li", { text: "Built from SFMTA’s weekday timetable: first ride " + (day[0] ? day[0].leg.depart : "—") + ", at Bus Stop by ~" + PLAN.finishAt + "." }),
+        el("li", { text: "Built from SFMTA’s weekday timetable: first ride " + (day[0] ? day[0].leg.depart : "—") + ", at Bus Stop by ~" + finishAt() + "." }),
         el("li", { text: "Every ride is at least ~3 blocks; longest walk between lines ~" + longest + " m." }),
         isFinite(tightest) ? el("li", { text: "Every connection has at least " + tightest + " min to spare (more before the infrequent ⚠ lines)." }) : null,
         long.length ? el("li", { text: long.length + " walk(s) over the 5-block limit — see the flagged legs." }) : null,
         PLAN.missing && PLAN.missing.length ? el("li", { text: "Not in SFMTA’s schedule data (approximate): " + PLAN.missing.join(", ") + "." }) : null,
+        activeOverride() ? el("li", { text: "You re-planned at " + clockMin(activeOverride().at) + (activeOverride().missing && activeOverride().missing.length ? " (couldn’t fit: " + activeOverride().missing.join(", ") + ")" : "") + "." }) : null,
       ]),
-      el("p", { class: "muted", text: "Running late? The bar at the top tells you on the day, and each leg lists the next departures." })
+      el("p", { class: "muted", text: "Missed a connection or running late? Re-plan from where you are: it re-times and re-orders the lines you have left." }),
+      el("div", { class: "replan-btns" }, [
+        el("button", { type: "button", class: "link-btn", text: "Re-plan from now", onclick: openReplan }),
+        activeOverride() ? el("button", { type: "button", class: "link-btn danger", text: "Back to original plan", onclick: clearOverride }) : null,
+      ])
     );
   }
 
