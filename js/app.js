@@ -254,6 +254,17 @@
 
   const VIEW_KEY = "muni-challenge:view";
   let selectedId = null; // leg shown in the map card; null = the next line to ride
+  const CARD_KEY = "muni-challenge:card";
+  let cardSmall = false;  // card folded down to one row (tap ▲ or swipe up to open)
+  try { cardSmall = localStorage.getItem(CARD_KEY) === "small"; } catch (e) { /* ignore */ }
+
+  function setCardSmall(small) {
+    if (small === cardSmall) return;
+    cardSmall = small;
+    try { localStorage.setItem(CARD_KEY, small ? "small" : "open"); } catch (e) { /* ignore */ }
+    renderCard();
+    MAP.resize();
+  }
 
   function setView(view) {
     document.body.dataset.view = view;
@@ -587,6 +598,7 @@
     const wasHidden = card.hidden;
     if (!it) {
       card.style.removeProperty("--block");
+      card.classList.remove("small");
       card.replaceChildren(
         el("p", { class: "mc-head" }, [el("b", { text: "🎉 Every line ridden" })]),
         el("p", { class: "mc-row", text: "Last stop: " + DATA.finish.name + "." }),
@@ -607,6 +619,21 @@
     };
     const live = info && info.item === it ? info : null;
     const label = it.done ? "✓ Ridden " + clockOf(state.done[it.id]) : it === next ? "Next" : "Later";
+    card.classList.toggle("small", cardSmall);
+    card.style.setProperty("--block", it.color);
+    if (cardSmall) {
+      const late = live && (live.delay == null || live.delay > 0);
+      const what = it.done ? label : late && live.catchable ? "catch " + clockMin(live.catchable[0]) : leg.depart || label;
+      card.replaceChildren(el("button", { type: "button", class: "mc-mini", "aria-label": "Open the card for " + leg.line, onclick: () => setCardSmall(false) }, [
+        el("span", { class: "leg-num", text: it.n }),
+        el("b", { text: leg.line }),
+        el("span", { class: "mc-mini-when" + (late ? " late" : ""), text: what }),
+        el("span", { class: "mc-mini-open", "aria-hidden": "true", text: "▲" }),
+      ]));
+      card.hidden = false;
+      if (wasHidden) MAP.resize();
+      return;
+    }
 
     let status = null;
     if (live) {
@@ -636,8 +663,8 @@
     const walkIn = it.walkIn && !it.crossing && it.walkIn.m >= 30 ? " · " + walkText(it.walkIn).toLowerCase() : "";
     const canReplan = !it.done && !leg.manual;
 
-    card.style.setProperty("--block", it.color);
     card.replaceChildren(...[
+      el("button", { type: "button", class: "mc-grip", "aria-label": "Fold the card down", title: "Fold down (or swipe down)", onclick: () => setCardSmall(true) }),
       el("div", { class: "mc-top" }, [
         el("button", { type: "button", class: "mc-arrow", "aria-label": "Previous line", text: "‹", disabled: k === 0, onclick: () => step(-1) }),
         el("p", { class: "mc-head" }, [
@@ -977,8 +1004,21 @@
 
   MAP.init($("map"), {
     onToggle: (id) => toggleDone(id),
-    onSelect: (id) => { const nx = lastItems.find((i) => !i.done); selectedId = nx && nx.id === id ? null : id; renderCard(); MAP.focus(id); },
+    onSelect: (id) => { const nx = lastItems.find((i) => !i.done); selectedId = nx && nx.id === id ? null : id; cardSmall = true; setCardSmall(false); MAP.focus(id); },
   });
+  // Swipe the card down to fold it, up to open it.
+  (() => {
+    const card = $("mapCard");
+    let y0 = null;
+    card.addEventListener("touchstart", (e) => { y0 = e.touches[0].clientY; }, { passive: true });
+    card.addEventListener("touchend", (e) => {
+      if (y0 == null) return;
+      const dy = e.changedTouches[0].clientY - y0;
+      y0 = null;
+      if (dy > 40) setCardSmall(true);
+      else if (dy < -40) setCardSmall(false);
+    });
+  })();
   // The map is the main screen on phones; remember if you switch to the list.
   let savedView = "map";
   try { savedView = localStorage.getItem(VIEW_KEY) || "map"; } catch (e) { /* ignore */ }

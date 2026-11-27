@@ -237,3 +237,13 @@ a { color: var(--accent); }
 .mc-btn { flex: 1; min-height: 40px; border-radius: 9px; border: 1px solid var(--line); background: var(--tag-bg); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
 .mc-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .mc-btn.warn { background: var(--risk-bg); border-color: var(--risk); color: var(--risk); }
+.map-card { touch-action: pan-x; }
+.mc-grip { justify-self: center; width: 56px; height: 14px; margin: -4px 0 0; padding: 0; border: 0; background: none; cursor: pointer; position: relative; }
+.mc-grip::before { content: ""; position: absolute; left: 12px; right: 12px; top: 4px; height: 5px; border-radius: 3px; background: var(--line); }
+.map-card.small { padding: 0; }
+.mc-mini { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 46px; padding: 6px 12px; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mc-mini b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-mini .leg-num { flex: none; }
+.mc-mini-when { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mc-mini-when.late { color: var(--risk); }
+.mc-mini-open { flex: none; color: var(--sub); font-size: .8rem; }
