@@ -17,7 +17,7 @@ window.MUNI_DATA = {
   options: {
     owl: {
       label: "Include Owl lines",
-      hint: "Adds the four overnight-only routes, ridden before the cable cars. Turns the day into a ~20-hour outing.",
+      hint: "Adds the four overnight-only routes, ridden in the last hour before regular service (about 5–6 AM), then straight on to the cable cars.",
     },
     event: {
       label: "Chase Center event day",
@@ -25,7 +25,7 @@ window.MUNI_DATA = {
     },
     earlybird: {
       label: "Completist: 714 BART Early Bird",
-      hint: "A single pre-dawn trip to Balboa Park BART. Only makes sense with Owl lines on.",
+      hint: "Runs only three times, before 6 AM, so it goes at the end of the Owl block. Needs Owl lines on.",
       requires: "owl",
     },
   },
@@ -86,7 +86,7 @@ window.MUNI_DATA = {
     { line: "91 3rd St/19th Ave Owl", mode: "owl", option: "owl", note: "The longest Owl run." },
     { line: "L Owl", mode: "owl", option: "owl" },
     { line: "N Owl", mode: "owl", option: "owl" },
-    { line: "714 BART Early Bird", mode: "owl", option: "earlybird", note: "One bus, one direction, one trip — pure completism." },
+    { line: "714 BART Early Bird", mode: "owl", option: "earlybird", note: "Three early trips a day, one direction — pure completism." },
     { line: "78X 16th St Arena Express", mode: "bus", option: "event", note: "Event days only; not in SFMTA's schedule data, so the stop and timing are approximate. Fit it in near Chase Center." },
   ],
 

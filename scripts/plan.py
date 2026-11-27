@@ -51,7 +51,9 @@ MAX_RIDE_MI = 2.5          # don't pick absurdly long rides
 WALK_LIMIT_M = 450         # straight-line ≈ 5 blocks on the street
 WALK_SPEED = 75 / 1.25     # m/min of straight-line distance (75 m/min with 25% street detour)
 DAY_START = 6 * 3600 + 45 * 60  # be at the first stop by 6:45 (cable cars start ~7)
-OWL_START = 25 * 3600      # Owl block starts at 1:00 AM (GTFS writes after-midnight trips as 25:00)
+OWL_START = 25 * 3600      # earliest Owl start, 1:00 AM (GTFS writes after-midnight trips as 25:00)
+OWL_LATEST = 30 * 3600     # latest Owl start tried, 6:00 AM
+NEXT_DAY = {"714"}         # morning-only routes written as 04:05 etc.; shifted +24 h onto the Owl clock
 DAY_HOURS = (6 * 3600, 22 * 3600)
 BUFFER_S = 3 * 60          # be at the stop at least this long before the bus is due…
 RISK_BUFFER_S = 5 * 60     # …and longer for the infrequent lines, where a miss costs the most
@@ -179,6 +181,7 @@ class Feed:
             for s in rows(z, "stops.txt")
         }
 
+        short_of = {v: k for k, v in self.routes.items()}
         trip_route, trip_shape = {}, {}
         for t in rows(z, "trips.txt"):
             if t["service_id"] == WEEKDAY and t["route_id"] in rid_wanted:
@@ -190,7 +193,8 @@ class Feed:
         for st in rows(z, "stop_times.txt"):
             tid = st["trip_id"]
             if tid in trip_route:
-                trip_stops[tid].append((int(st["stop_sequence"]), st["stop_id"], secs(st["departure_time"]), float(st["shape_dist_traveled"] or 0)))
+                shift = 24 * 3600 if short_of.get(trip_route[tid]) in NEXT_DAY else 0
+                trip_stops[tid].append((int(st["stop_sequence"]), st["stop_id"], secs(st["departure_time"]) + shift, float(st["shape_dist_traveled"] or 0)))
         for v in trip_stops.values():
             v.sort()
         self.trip_stops = trip_stops
@@ -512,6 +516,50 @@ def search(planner, order, fixed_prefix, iters, rng, label, temp_min=20):
     return best, best_info
 
 
+def plan_owl(feed, core, early, day_ll, day_dep):
+    """
+    Owl lines (and the 714, if listed) ridden as late as possible, finishing just before the
+    day's first ride: try every start time and order, keep plans where every ride really runs,
+    and prefer (1) including the 714, (2) the latest finish, (3) the least waiting.
+    """
+    deadline = day_dep + 24 * 3600  # Owl times are on the 24:00+ clock
+    best = None
+    for start in range(OWL_START, OWL_LATEST + 1, 5 * 60):
+        core_p = Planner(feed, core, start_time=start)
+        full_p = Planner(feed, core + early, start_time=start) if early else None
+        for perm in permutations(range(len(core))):
+            perm = list(perm)
+            c, info = core_p.evaluate(perm)
+            if not info or c - info[2] > 1:
+                continue  # some ride doesn't exist at this hour
+            plans = [(False, core_p, perm, info)]
+            if full_p:
+                fc, finfo = full_p.evaluate(perm + [len(core)])
+                if finfo and fc - finfo[2] <= 1:
+                    plans.append((True, full_p, perm + [len(core)], finfo))
+            for has_early, pl, order, inf in plans:
+                legs = inf[1]
+                last_ll = feed.stops[legs[-1]["alight"]]["ll"]
+                ready = inf[2] + walk_m(last_ll, day_ll) / WALK_SPEED * 60 + BUFFER_S
+                if ready > deadline:
+                    continue
+                score = (has_early, inf[2], -(inf[2] - legs[0]["dep"]))
+                if best is None or score > best[0]:
+                    best = (score, pl, order, inf, has_early)
+    if not best:
+        print("  ! No Owl plan fits before the day starts")
+        return []
+    _, pl, order, inf, has_early = best
+    legs = build_block(feed, pl, order, inf, "owl", OWL_COLOR)
+    if has_early:
+        legs[-1]["option"] = "earlybird"
+    elif early:
+        print("  ! 714 doesn't fit after the Owl lines")
+    gap = (deadline - inf[2]) / 60
+    print(f"  Owl block {legs[0]['depart']}–{legs[-1]['arrive']}, {gap:.0f} min before the first day ride")
+    return legs
+
+
 def neighborhoods(points):
     names = []
     for p in points:
@@ -589,25 +637,6 @@ def main():
     owl = [ln for ln in lines if ln.option in ("owl", "earlybird")]
     day = [ln for ln in lines if ln.option not in ("owl", "earlybird")]
 
-    # ---- Overnight Owl block: brute force the order (4 lines), 714 appended if it fits.
-    owl_core = [ln for ln in owl if ln.option == "owl"]
-    owl_planner = Planner(feed, owl_core, start_ll=None, end_ll=None, start_time=OWL_START)
-    best = (math.inf, None, None)
-    for perm in permutations(range(len(owl_core))):
-        c, info = owl_planner.evaluate(list(perm))
-        if c < best[0]:
-            best = (c, list(perm), info)
-    _, owl_order, owl_info = best
-    owl_legs = build_block(feed, owl_planner, owl_order, owl_info, "owl", OWL_COLOR)
-    early = [ln for ln in owl if ln.option == "earlybird"]
-    if early:
-        ep = Planner(feed, owl_core + early, start_time=OWL_START)
-        c, info = ep.evaluate(owl_order + [len(owl_core)])
-        if info:
-            owl_legs.append(build_block(feed, ep, owl_order + [len(owl_core)], info, "owl", OWL_COLOR)[-1] | {"option": "earlybird"})
-        else:
-            print("  ! 714 doesn't fit after the Owl lines")
-
     # ---- Main day.
     first = [k for k, ln in enumerate(day) if ln.short in FIRST_LINES]
     rest = [k for k in range(len(day)) if k not in first]
@@ -616,8 +645,9 @@ def main():
         prev = json.loads(Path(args.warm).read_text(encoding="utf-8").split("window.MUNI_PLAN = ", 1)[1].rstrip().rstrip(";"))
         names = [l["line"] for b in prev["blocks"] if b["id"] != "owl" for l in b["legs"]]
         pos = {ln.name: k for k, ln in enumerate(day)}
-        warm = [pos[n] for n in names if n in pos and pos[n] in rest]
-        order = first + warm + [k for k in rest if k not in warm]
+        warm = [pos[n] for n in names if n in pos]
+        # Keep the saved order exactly, cable cars included (they stay the first group).
+        order = [k for k in warm if k in first] + [k for k in first if k not in warm] +                 [k for k in warm if k in rest] + [k for k in rest if k not in warm]
     start_ll = feed.stops[day[first[0]].stop_ids[0]]["ll"] if first else None
     planner = Planner(feed, day, start_ll=(37.78485, -122.40776), end_ll=FINISH, start_time=DAY_START)
     best_c, best_order, best_info = math.inf, None, None
@@ -630,6 +660,10 @@ def main():
     order, info = best_order, best_info
     day_legs = build_block(feed, planner, order, info, "day", None)
     _, _, end, end_walk = info
+
+    # ---- Overnight Owl block, as close to the start of the day as it fits.
+    owl_legs = plan_owl(feed, [ln for ln in owl if ln.option == "owl"], [ln for ln in owl if ln.option == "earlybird"],
+                        day_legs[0]["board"]["ll"], day_legs[0]["dep_min"] * 60)
 
     # ---- Report.
     print("\nDay plan:")

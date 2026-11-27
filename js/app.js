@@ -79,8 +79,13 @@
 
   function nowMin() {
     const d = new Date();
-    const m = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
-    return m < 4 * 60 ? m + 1440 : m; // 1–4 AM lines up with the Owl block's after-midnight times
+    return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+  }
+
+  /** The clock time `now`, moved onto the same 24-hour frame as plan time `ref`
+   *  (Owl times run past midnight, e.g. 5:01 AM is written as 1741). */
+  function inFrame(now, ref) {
+    return now + 1440 * Math.round((ref - now) / 1440);
   }
 
   function duration(mins) {
@@ -271,7 +276,7 @@
         el("div", { class: "live-box", id: "live-" + id, hidden: true }),
         route,
         item.longWalk ? el("p", { class: "warn-line", text: "⚠ ~" + item.walkIn.m + " m on foot from the previous line — over the 5-block limit." }) : null,
-        leg.wait_min >= 12 ? el("p", { class: "leg-note", text: "Scheduled wait here: ~" + leg.wait_min + " min." }) : null,
+        leg.wait_min >= 12 && item.walk != null && !item.crossing ? el("p", { class: "leg-note", text: "Scheduled wait here: ~" + leg.wait_min + " min." }) : null,
         leg.note ? el("p", { class: "leg-note", text: leg.note }) : null,
         altsNode(leg),
       ]),
@@ -288,9 +293,9 @@
     blocks.forEach((b) => b.legs.forEach((leg) => {
       const id = legId(leg);
       const prev = items[items.length - 1];
-      // The overnight Owl block is separate from the day, so no walk between them.
-      const sameSegment = prev && (prev.block === "owl") === (b.id === "owl");
-      const walk = sameSegment ? meters(prev.b, leg.board.ll) : null;
+      // From the Owl block you walk over to the first cable car; that's not a timed transfer.
+      const crossing = prev && prev.block === "owl" && b.id !== "owl";
+      const walk = prev ? meters(prev.b, leg.board.ll) : null;
       items.push({
         leg, id, block: b.id, color: b.color, done: !!state.done[id], n: items.length + 1,
         a: leg.board.ll, b: leg.alight.ll, path: leg.path,
@@ -298,11 +303,18 @@
       });
       const it = items[items.length - 1];
       // Over the limit in a straight line, or much longer on foot (e.g. around a freeway).
-      it.longWalk = walk != null && (walk > WALK_MAX_M || (it.walkIn && it.walkIn.m > STREET_MAX_M));
+      it.longWalk = !crossing && walk != null && (walk > WALK_MAX_M || (it.walkIn && it.walkIn.m > STREET_MAX_M));
+      if (crossing) {
+        it.crossing = true;
+        it.walkIn = { m: walk, min: Math.max(1, Math.round((walk * 1.25) / WALK_M_PER_MIN)) };
+      }
     }));
     items.forEach((it, i) => {
       const nx = items[i + 1];
-      if (nx && nx.walk != null) { it.nextWalk = nx.walkIn; it.nextLine = nx.leg.line; }
+      if (nx && nx.walk != null) {
+        it.nextWalk = nx.walkIn;
+        it.nextLine = nx.leg.line + (nx.crossing && nx.leg.depart ? " (leaves " + nx.leg.depart + ")" : "");
+      }
       else if (it.block !== "owl" && (!nx || nx.block === "owl")) {
         const fw = PLAN.finishWalk;
         const m = meters(it.b, DATA.finish.at);
@@ -354,7 +366,7 @@
     const i = items.findIndex((it) => !it.done);
     const next = items[i];
     if (!next || next.leg.manual || next.leg.dep_min == null) return null;
-    const now = nowMin();
+    const now = inFrame(nowMin(), next.leg.dep_min);
     const leg = next.leg;
     if (Math.abs(now - leg.dep_min) > LIVE_WINDOW_MIN) return null;
 
@@ -408,13 +420,13 @@
 
     const box = $("live-" + item.id);
     if (!box) return;
-    box.replaceChildren(
+    box.replaceChildren(...[
       el("p", { class: "live-head " + cls, text: delay > 0 ? "You’ll miss the planned " + clockMin(leg.dep_min) + "." : "Planned bus: " + clockMin(leg.dep_min) + (leaveIn > 0 ? " (in " + Math.round(leaveIn + walk) + " min)" : "") }),
       later.length
         ? el("p", { class: "live-next" }, [delay > 0 ? "Next you can catch: " : "If you miss it: "].concat(later.map(([d, a], k) => el("span", { class: "dep" }, [(k ? " · " : ""), el("b", { text: clockMin(d) }), " (arr. " + clockMin(a) + ")"]))))
-        : null,
-      walk ? el("p", { class: "live-next", text: "Includes the ~" + walk + " min walk to the stop." }) : null
-    );
+        : delay != null && delay <= 0 ? el("p", { class: "live-next", text: "No later one from this stop in the timetable — don’t miss it." }) : null,
+      walk ? el("p", { class: "live-next", text: "Includes the ~" + walk + " min walk to the stop." }) : null,
+    ].filter(Boolean));
     box.hidden = false;
   }
 
@@ -525,7 +537,7 @@
 
   function renderPlanCheck(items) {
     const day = items.filter((i) => i.block !== "owl" && !i.leg.manual);
-    const walks = items.filter((i) => i.walk != null);
+    const walks = items.filter((i) => i.walk != null && !i.crossing);
     const longest = walks.reduce((m, i) => Math.max(m, i.walkIn ? i.walkIn.m : i.walk), 0);
     const long = items.filter((i) => i.longWalk);
     const transfers = day.slice(1).filter((i) => i.leg.wait_min != null);

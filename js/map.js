@@ -456,10 +456,11 @@
     return ((h % 12) || 12) + ":" + String(m % 60).padStart(2, "0") + " " + (h < 12 ? "AM" : "PM");
   }
 
-  function nowMin() {
+  // Clock minutes, moved onto the plan's frame for `ref` (Owl times run past 1440).
+  function nowMin(ref) {
     const d = new Date();
     const m = d.getHours() * 60 + d.getMinutes();
-    return m < 240 ? m + 1440 : m;
+    return ref == null ? m : m + 1440 * Math.round((ref - m) / 1440);
   }
 
   function startWatching() {
@@ -608,7 +609,7 @@
       const mins = Math.max(1, Math.round(left / 75));
       main = (left < 950 ? Math.round(left / 10) * 10 + " m" : (left / 1609.34).toFixed(1) + " mi") + " · " + mins + " min walk";
       if (nav.depMin != null) {
-        const spare = nav.depMin - (nowMin() + mins);
+        const spare = nav.depMin - (nowMin(nav.depMin) + mins);
         if (Math.abs(spare) < 240) sub += " · " + (spare >= 0 ? "due " + clockMin(nav.depMin) + " (" + Math.round(spare) + " min spare)" : "planned " + clockMin(nav.depMin) + " — you’ll miss it");
       }
       if (nav.error === "offline") sub += " · offline: straight line";
