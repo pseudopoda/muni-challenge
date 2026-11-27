@@ -7,8 +7,9 @@
  *   walks   – dashed transfers between lines (red when over the walk limit)
  *   legs    – the part of each line you actually ride
  *   legs    – (above) the part of each line you actually ride
+ *   trail   – where you've been today (when the app may use your location all day)
  *   nav     – dotted walking route from your location (🚶 directions)
- *   markers – numbered boarding points, the 🍻 finish and your location
+ *   markers – numbered boarding points, the 🍻 finish, live buses and your location
  * Tap a section in the legend to show just that part of the day.
  * saveOffline() stores the San Francisco basemap in the Cache API for use underground.
  */
@@ -43,6 +44,11 @@
   let follow = false;         // keep the camera on you while navigating
   let nav = null;             // { to, name, line, depMin, route: [[lat, lon]], from, at, fetching }
   let banner = null;
+  let onPositionCb = null;    // app hook: every location fix
+  let keepWatching = false;   // app asked for location all day (ride detection, trail)
+  let wakeLock = null;        // screen stays on during walking directions
+  let vehicleMarkers = [];
+  let trail = [];
 
   function loadPrefs() {
     try { return Object.assign({ network: true }, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}")); }
@@ -72,6 +78,7 @@
     }
     onToggle = opts.onToggle;
     onSelect = opts.onSelect || null;
+    onPositionCb = opts.onPosition || null;
     map = new maplibregl.Map({
       container: el,
       style: styleUrl(),
@@ -170,7 +177,7 @@
   function addLayers() {
     if (map.getSource("legs")) { ready = true; return; }
     const empty = { type: "FeatureCollection", features: [] };
-    ["network", "walks", "legs"].forEach((id) => map.addSource(id, { type: "geojson", data: empty }));
+    ["network", "walks", "legs", "trail"].forEach((id) => map.addSource(id, { type: "geojson", data: empty }));
 
     map.addLayer({
       id: "network", type: "line", source: "network",
@@ -180,6 +187,11 @@
         "line-width": LINE_WIDTH(2.6),
         "line-opacity": ["case", ["get", "dim"], 0.12, 0.38],
       },
+    });
+    map.addLayer({
+      id: "trail", type: "line", source: "trail",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#1a73e8", "line-width": LINE_WIDTH(3), "line-opacity": 0.45 },
     });
     map.addLayer({
       id: "walks", type: "line", source: "walks",
@@ -280,6 +292,7 @@
     map.getSource("legs").setData(fc(legs));
     map.getSource("walks").setData(fc(walks));
     map.getSource("network").setData(fc(network));
+    drawTrail();
     drawNav();
     drawMarkers();
     fitIfNeeded();
@@ -495,6 +508,7 @@
       map.easeTo({ center: lngLat(me.ll), zoom: Math.max(map.getZoom(), 15.5) });
     }
     if (nav) updateNav();
+    if (onPositionCb) onPositionCb({ ll: me.ll, acc: me.acc, at: me.at });
   }
 
   function onPositionError(err) {
@@ -516,6 +530,7 @@
     follow = true;
     if (popup) popup.remove();
     startWatching();
+    keepAwake(true);
     renderBanner();
     if (me) updateNav();
     else map.easeTo({ center: lngLat(opts.to), zoom: 16 });
@@ -526,7 +541,70 @@
     nav = null;
     follow = false;
     banner.hidden = true;
+    keepAwake(false);
     drawNav();
+    if (!keepWatching) stopWatching();
+  }
+
+  function stopWatching() {
+    if (watchId == null) return;
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+
+  /** Keep the screen on while walking directions are up (where the browser allows it). */
+  async function keepAwake(on) {
+    try {
+      if (on && !wakeLock && "wakeLock" in navigator && !document.hidden) {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+      } else if (!on && wakeLock) {
+        await wakeLock.release();
+        wakeLock = null;
+      }
+    } catch (e) { /* not supported or not allowed right now */ }
+  }
+  // The lock drops when the page is hidden; take it again on return.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && nav) keepAwake(true); });
+
+  /** The app may use your location all day (ride detection, trail). */
+  function watch(on) {
+    keepWatching = on;
+    if (on) startWatching();
+    else if (!nav) stopWatching();
+  }
+
+  /** Live buses: [{ ll: [lat, lon], label, color, title }]. */
+  function setVehicles(list) {
+    vehicleMarkers.forEach((m) => m.remove());
+    vehicleMarkers = [];
+    if (!map) return;
+    for (const v of list) {
+      const node = document.createElement("div");
+      node.className = "bus-dot";
+      node.style.setProperty("--c", v.color);
+      node.textContent = v.label;
+      node.title = v.title;
+      vehicleMarkers.push(new maplibregl.Marker({ element: node }).setLngLat(lngLat(v.ll)).addTo(map));
+    }
+  }
+
+  /** Where you've been: [[lat, lon]] (breaks of > 1 km start a new line). */
+  function setTrail(points) {
+    trail = points || [];
+    drawTrail();
+  }
+
+  function drawTrail() {
+    if (!map || !map.getSource("trail")) return;
+    const lines = [];
+    let cur = [];
+    trail.forEach((p, i) => {
+      if (i && metersBetween(trail[i - 1], p) > 1000) { if (cur.length > 1) lines.push(cur); cur = []; }
+      cur.push(lngLat(p));
+    });
+    if (cur.length > 1) lines.push(cur);
+    map.getSource("trail").setData({ type: "FeatureCollection", features: lines.map((c) => ({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: c } })) });
   }
 
   function updateNav() {
@@ -709,5 +787,7 @@
     }
   }
 
-  window.MuniMap = { init, update, focus, resize, navigate, saveOffline, getLocation };
+  const navigating = () => !!nav;
+
+  window.MuniMap = { init, update, focus, resize, navigate, saveOffline, getLocation, watch, setVehicles, setTrail, navigating };
 })();

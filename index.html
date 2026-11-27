@@ -51,6 +51,7 @@
           <span class="hint" id="offlineNote"></span>
         </div>
         <div class="live-key" id="liveKey"></div>
+        <div class="options phone-opts" id="phoneOpts"></div>
       </section>
 
       <section class="card" id="planCheck"></section>
@@ -73,7 +74,7 @@
         <button class="link-btn danger" id="resetBtn" type="button">Reset progress</button>
         <p>Progress is saved on this device only. Not affiliated with SFMTA. Have fun, and hydrate.</p>
         <p class="disclaimer">Walking directions (🚶) use your location only while they’re on, and send it to the free <a href="https://routing.openstreetmap.de/about.html">FOSSGIS OSRM</a> router to plan the walk. Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors.</p>
-        <p class="disclaimer">Live arrivals (optional) come from <a href="https://511.org/open-data">511.org</a> using your own key: the app asks 511 about the stop you’re heading to, about once a minute while it’s open. The key is kept only in this browser.</p>
+        <p class="disclaimer">Live arrivals (optional) come from <a href="https://511.org/open-data">511.org</a> using your own key: the app asks 511 about the stop you’re heading to (about once a minute) and for Muni alerts (every 15 minutes) while it’s open. The key is kept only in this browser. “Use my location all day” keeps your trail on this device only.</p>
         <p class="disclaimer">Stop, route and schedule data: SFMTA GTFS, used under the <a href="SFMTA_Transit_Data_License_Agreement.txt">SFMTA Transit Data License Agreement</a>. The SFMTA provides the Data “as is” and “as available” and makes no representations or warranties of any kind as to its accuracy. The SFMTA and its employees, officers, directors and agents shall not be liable for damages of any kind arising from the use of the Data or any application that uses the Data. Use of this app is at your own risk.</p>
       </footer>
     </main>
@@ -94,6 +95,7 @@
   <script src="js/map.js"></script>
   <script src="js/replan.js"></script>
   <script src="js/replan-data.js"></script>
+  <script src="js/service-days.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

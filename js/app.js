@@ -237,12 +237,19 @@
     saveState();
     if (on) selectedId = null; // the map card moves on to the next line
     render();
-    if (on) advanceTo(lastItems.find((i) => !i.done));
+    if (on && rideHint === id) rideHint = null;
+    if (on) advanceTo(lastItems.find((i) => !i.done), id);
   }
 
   /** After ticking a line off: bring the next one into view (map and list). */
-  function advanceTo(next) {
+  function advanceTo(next, riddenId) {
     if (!next) return;
+    // With location on: start walking directions from the line you just got off.
+    const k = lastItems.indexOf(next);
+    if (phone.track && k > 0 && lastItems[k - 1].id === riddenId && next.walk != null && next.walk > 30 && !next.leg.manual) {
+      walkTo(next);
+      return;
+    }
     if (WIDE.matches || document.body.dataset.view === "map") requestAnimationFrame(() => MAP.focus(next.id));
     if (WIDE.matches || document.body.dataset.view === "list") {
       const n = $("leg-" + next.id);
@@ -417,6 +424,7 @@
         el("div", { class: "live-box", id: "live-" + id, hidden: true }),
         route,
         item.longWalk ? el("p", { class: "warn-line", text: "⚠ ~" + item.walkIn.m + " m on foot from the previous line — over the 5-block limit." }) : null,
+        ...(done ? [] : alertsFor(leg).slice(0, 2).map((a) => el("p", { class: "warn-line", text: "⚠ Muni: " + a.head }))),
         leg.wait_min >= 12 && item.walk != null && !item.crossing ? el("p", { class: "leg-note", text: "Scheduled wait here: ~" + leg.wait_min + " min." }) : null,
         leg.note ? el("p", { class: "leg-note", text: leg.note }) : null,
         altsNode(leg),
@@ -521,19 +529,63 @@
     const walk = prev && prev.done && next.walkIn ? next.walkIn.min : 0;
     const readyAt = now + walk;
     const seen = new Set();
+    // Each option: [departs, arrives, scheduled departure, live?]. With 511 predictions, a
+    // scheduled trip moves to its predicted time (matched on 511's own scheduled time).
+    const lv = liveFor(leg);
     const options = [[leg.dep_min, leg.arr_min]].concat(leg.alts || [])
       .filter(([d]) => !seen.has(d) && seen.add(d))
+      .map(([d, a]) => {
+        const v = lv && lv.all && lv.all.find((x) => x.aimed && Math.abs(toFrame(x.aimed, d) - d) <= 1);
+        if (!v || !v.live) return [d, a, d, false];
+        const ld = toFrame(v.t, d);
+        return [ld, a + (ld - d), d, true];
+      })
       .sort((x, y) => x[0] - y[0]);
     const catchable = options.find(([d]) => d >= readyAt);
+    const planned = options.find((o) => o[2] === leg.dep_min);
     // Behind: what you can still catch. On time: the backups if you miss the planned one.
-    const later = options.filter(([d]) => d >= readyAt && (catchable[0] > leg.dep_min || d > leg.dep_min)).slice(0, 3);
-    const delay = catchable ? catchable[0] - leg.dep_min : null;
-    return { item: next, now, walk, leaveIn: leg.dep_min - walk - now, catchable, later, delay };
+    const later = options.filter((o) => o[0] >= readyAt && (catchable[2] > leg.dep_min || o[2] > leg.dep_min)).slice(0, 3);
+    const delay = catchable ? Math.max(0, catchable[2] - leg.dep_min ? catchable[0] - leg.dep_min : 0) : null;
+    const busLate = planned && planned[3] ? Math.round(planned[0] - leg.dep_min) : null;
+    const leaveIn = (planned ? planned[0] : leg.dep_min) - walk - now;
+    return { item: next, now, walk, leaveIn, catchable, later, delay: delay == null ? null : Math.round(delay), busLate, live: !!(planned && planned[3]) };
+  }
+
+  /** Minutes-after-midnight of a timestamp, on the same frame as plan time `ref`. */
+  function toFrame(ts, ref) {
+    const d = new Date(ts);
+    return inFrame(d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60, ref);
+  }
+
+  /** Words for the live status: { cls, text (top strip), short (card) }. */
+  function statusOf(info) {
+    const { item, walk, leaveIn, catchable, delay, busLate } = info;
+    const leg = item.leg;
+    const bus = busLate != null && Math.abs(busLate) >= 2
+      ? (busLate > 0 ? " · bus ~" + busLate + " min late (live)" : " · bus ~" + -busLate + " min early (live)") : "";
+    if (delay == null) {
+      const t = "No more " + leg.line + " departures in the timetable soon — check live arrivals.";
+      return { cls: "late", text: t, short: "No more departures soon — check live arrivals." };
+    }
+    if (delay > 0) {
+      const t = "~" + delay + " min behind · catch the " + clockMin(catchable[0]) + (catchable[3] ? " (live)" : "");
+      return { cls: "late", text: t + " " + leg.line, short: t };
+    }
+    if (leaveIn > 1) {
+      const t = "On track · " + (walk ? "start walking in " : "be at the stop in ") + Math.round(leaveIn) + " min";
+      return { cls: "ok", text: t + " for the " + clockMin(leg.dep_min) + " " + leg.line + bus, short: t + bus };
+    }
+    const t = (walk ? "Go now" : "Due now");
+    return { cls: "soon", text: t + " — the " + leg.line + " leaves at " + clockMin(catchable[0]) + bus, short: t + bus };
   }
 
   function renderLive() {
     document.querySelectorAll(".live-box").forEach((b) => { b.hidden = true; b.replaceChildren(); });
     const strip = $("liveStatus");
+    // Keep the next line's live arrivals and the alerts fresh (within the hourly budget).
+    const nx = lastItems.find((it) => !it.done && !it.leg.manual && it.leg.dep_min != null);
+    if (nx && nx.leg.board && nx.leg.board.code && Math.abs(inFrame(nowMin(), nx.leg.dep_min) - nx.leg.dep_min) <= LIVE_WINDOW_MIN) loadLive(nx.leg.board.code, 55000);
+    loadAlerts();
     const info = liveInfo(lastItems);
     renderCard(info);
     if (!info) {
@@ -541,22 +593,10 @@
       syncTopbarHeight();
       return;
     }
-    const { item, walk, leaveIn, catchable, later, delay } = info;
+    const { item, walk, leaveIn, later, delay } = info;
     const leg = item.leg;
-    let text, cls;
-    if (delay == null) {
-      text = "No more " + leg.line + " departures in the timetable soon — check live arrivals.";
-      cls = "late";
-    } else if (delay > 0) {
-      text = "~" + delay + " min behind · catch the " + clockMin(catchable[0]) + " " + leg.line;
-      cls = "late";
-    } else if (leaveIn > 1) {
-      text = "On track · " + (walk ? "start walking in " : "be at the stop in ") + Math.round(leaveIn) + " min for the " + clockMin(leg.dep_min) + " " + leg.line;
-      cls = "ok";
-    } else {
-      text = (walk ? "Go now — " : "Due now — ") + "the " + leg.line + " leaves at " + clockMin(leg.dep_min);
-      cls = "soon";
-    }
+    const { cls, text } = statusOf(info);
+    leaveAlert(info);
     strip.className = "live-strip " + cls;
     strip.replaceChildren(
       el("span", { text }),
@@ -591,14 +631,21 @@
 
   const routeCode = (line) => (ROUTE_CODE[line] || line.split(" ")[0]).toUpperCase().replace(/[^A-Z0-9]/g, "");
 
-  async function loadLive(code) {
-    if (!apiKey || !code || document.hidden) return;
-    const c = liveStops[code];
-    if (c && (c.loading || Date.now() - c.at < 55000)) return;
+  /** Take one request from the hourly budget (false if it's used up). */
+  function spend(reserve) {
     const t0 = Date.now();
     while (liveCalls.length && t0 - liveCalls[0] > 3600000) liveCalls.shift();
-    if (liveCalls.length >= 50) return;
+    if (liveCalls.length >= 50 - (reserve || 0)) return false;
     liveCalls.push(t0);
+    return true;
+  }
+
+  async function loadLive(code, maxAge) {
+    if (!apiKey || !code || document.hidden) return;
+    const c = liveStops[code];
+    if (c && (c.loading || Date.now() - c.at < (maxAge || 55000))) return;
+    // Lines you're browsing ahead to get what's left after the next line's share.
+    if (!spend(maxAge > 55000 ? 15 : 0)) return;
     liveStops[code] = Object.assign({}, c, { loading: true });
     try {
       const r = await fetch("https://api.511.org/transit/StopMonitoring?agency=SF&format=json&stopcode=" + encodeURIComponent(code) + "&api_key=" + encodeURIComponent(apiKey));
@@ -609,17 +656,57 @@
       const visits = ((j.ServiceDelivery.StopMonitoringDelivery || {}).MonitoredStopVisit || []).map((v) => {
         const mj = v.MonitoredVehicleJourney || {}, mc = mj.MonitoredCall || {};
         const expected = mc.ExpectedDepartureTime || mc.ExpectedArrivalTime;
+        const loc = mj.VehicleLocation || {};
+        const lat = parseFloat(loc.Latitude), lon = parseFloat(loc.Longitude);
         return {
           line: String(mj.LineRef || "").toUpperCase().replace(/[^A-Z0-9]/g, ""),
           t: Date.parse(expected || mc.AimedDepartureTime || mc.AimedArrivalTime),
+          aimed: Date.parse(mc.AimedDepartureTime || mc.AimedArrivalTime) || null,
           live: !!expected && mj.Monitored !== false,
+          ll: isFinite(lat) && isFinite(lon) && lat ? [lat, lon] : null,
         };
       }).filter((v) => !isNaN(v.t));
       liveStops[code] = { at: Date.now(), visits };
     } catch (e) {
       liveStops[code] = { at: Date.now(), error: e instanceof TypeError ? "couldn’t reach 511 (offline?)" : e.message };
     }
-    renderCard();
+    renderLive();
+  }
+
+  // Muni service alerts (detours, moved stops, lines not running): every 15 minutes.
+  let alerts = null, alertsAt = 0;
+
+  async function loadAlerts() {
+    if (!apiKey || document.hidden || Date.now() - alertsAt < 15 * 60000 || !spend()) return;
+    alertsAt = Date.now();
+    try {
+      const r = await fetch("https://api.511.org/transit/servicealerts?agency=SF&format=json&api_key=" + encodeURIComponent(apiKey));
+      if (!r.ok) throw new Error(r.status);
+      const j = JSON.parse((await r.text()).replace(/^\uFEFF/, ""));
+      const norm = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const text = (t) => (t && t.Translations && t.Translations[0] && t.Translations[0].Text) || "";
+      alerts = (j.Entities || []).filter((e) => e.Alert).map((e) => ({
+        id: e.Id,
+        periods: (e.Alert.ActivePeriods || []).map((pd) => [pd.Start || 0, pd.End || Infinity]),
+        on: (e.Alert.InformedEntities || []).map((ie) => ({ route: norm(ie.RouteId), stop: ie.StopId ? String(ie.StopId) : null })),
+        head: text(e.Alert.HeaderText),
+        desc: text(e.Alert.DescriptionText),
+      }));
+    } catch (e) {
+      alertsAt = Date.now() - 10 * 60000; // try again in ~5 minutes
+      return;
+    }
+    render();
+  }
+
+  /** Alerts that touch this line as a whole, or the stops you use on it. */
+  function alertsFor(leg) {
+    if (!alerts) return [];
+    const code = routeCode(leg.line), stops = [leg.board && leg.board.code, leg.alight && leg.alight.code];
+    const now = Date.now() / 1000;
+    return alerts.filter((a) =>
+      (!a.periods.length || a.periods.some(([s0, s1]) => now >= s0 && now <= s1)) &&
+      a.on.some((o) => o.route === code && (!o.stop || stops.includes(o.stop))));
   }
 
   /** The next few live departures of `leg` from its boarding stop, or null if none known yet. */
@@ -629,8 +716,8 @@
     if (ls.error) return { error: ls.error };
     if (!ls.visits) return null;
     const code = routeCode(leg.line);
-    const list = ls.visits.filter((v) => v.line === code && v.t > Date.now() - 30000).sort((a, b) => a.t - b.t).slice(0, 3);
-    return { list, at: ls.at };
+    const all = ls.visits.filter((v) => v.line === code && v.t > Date.now() - 30000).sort((a, b) => a.t - b.t);
+    return { list: all.slice(0, 3), all, at: ls.at };
   }
 
   const minsAway = (t) => { const m = Math.round((t - Date.now()) / 60000); return m <= 0 ? "now" : m + " min"; };
@@ -656,8 +743,10 @@
     apiKey = k;
     try { k ? localStorage.setItem(LIVE_KEY, k) : localStorage.removeItem(LIVE_KEY); } catch (e) { /* ignore */ }
     for (const c of Object.keys(liveStops)) delete liveStops[c];
+    alerts = null;
+    alertsAt = 0;
     renderLiveKey();
-    renderCard();
+    renderLive();
   }
 
   // ---- Map card: the line you're on (or one you tapped), with backups and actions ----
@@ -704,16 +793,20 @@
     // Live arrivals for the next line, or any line due within the next ~1.5 h.
     const wantLive = !!apiKey && !it.done && !leg.manual && !!(leg.board && leg.board.code)
       && (it === next || (leg.dep_min != null && Math.abs(inFrame(nowMin(), leg.dep_min) - leg.dep_min) < 90));
-    if (wantLive) loadLive(leg.board.code);
+    if (wantLive) loadLive(leg.board.code, it === next ? 55000 : 180000);
+    const lineAlerts = it.done ? [] : alertsFor(leg);
+    const onIt = rideHint === it.id && !it.done;
+    showVehicles(it, wantLive);
     card.classList.toggle("small", cardSmall);
     card.style.setProperty("--block", it.color);
     if (cardSmall) {
       const late = live && (live.delay == null || live.delay > 0);
       const lv = !it.done && wantLive ? liveFor(leg) : null;
-      const what = it.done ? label : lv && lv.list && lv.list.length ? "📡 " + minsAway(lv.list[0].t) : late && live.catchable ? "catch " + clockMin(live.catchable[0]) : leg.depart || label;
+      const what = it.done ? label : onIt ? "🚌 On it?" : lv && lv.list && lv.list.length ? "📡 " + minsAway(lv.list[0].t) : late && live.catchable ? "catch " + clockMin(live.catchable[0]) : leg.depart || label;
       card.replaceChildren(el("button", { type: "button", class: "mc-mini", "aria-label": "Open the card for " + leg.line, onclick: () => setCardSmall(false) }, [
         el("span", { class: "leg-num", text: it.n }),
         el("b", { text: leg.line }),
+        lineAlerts.length || dayWarning() ? el("span", { class: "mc-mini-warn", title: "Alert", text: "⚠" }) : null,
         el("span", { class: "mc-mini-when" + (late ? " late" : ""), text: what }),
         el("span", { class: "mc-mini-open", "aria-hidden": "true", text: "▲" }),
       ]));
@@ -723,14 +816,18 @@
     }
 
     let status = null;
-    if (live) {
-      const cls = live.delay == null || live.delay > 0 ? "late" : live.leaveIn > 1 ? "ok" : "soon";
-      const text = live.delay == null ? "No more departures soon in the timetable — check live arrivals."
-        : live.delay > 0 ? "~" + live.delay + " min behind — catch the " + clockMin(live.catchable[0])
-        : live.leaveIn > 1 ? "On track · " + (live.walk ? "start walking in " : "be at the stop in ") + Math.round(live.leaveIn) + " min"
-        : live.walk ? "Go now" : "Due now";
-      status = el("p", { class: "mc-status " + cls, text });
+    if (onIt) {
+      status = el("p", { class: "mc-status ok", text: "🚌 Looks like you’re riding the " + leg.line + " — tap ✓ Rode it once you’ve done 3+ blocks." });
+    } else if (live) {
+      const st = statusOf(live);
+      status = el("p", { class: "mc-status " + st.cls, text: st.short });
     }
+    const dw = dayWarning();
+    const dayRow = dw && !dayWarnHidden() ? el("p", { class: "mc-row mc-warn" }, [el("span", { text: "📅 " + dw + " " }), el("button", { type: "button", class: "mc-x", "aria-label": "Hide for today", text: "✕", onclick: () => { hideDayWarn(); renderCard(); } })]) : null;
+    const alertRows = lineAlerts.slice(0, 2).map((a) => el("details", { class: "mc-alert" }, [
+      el("summary", { text: "⚠ " + a.head }),
+      a.desc && a.desc !== a.head ? el("p", { text: a.desc }) : null,
+    ]));
 
     let liveRow = null;
     if (wantLive) {
@@ -772,6 +869,8 @@
         ]),
         el("button", { type: "button", class: "mc-arrow", "aria-label": "Next line", text: "›", disabled: k === items.length - 1, onclick: () => step(1) }),
       ]),
+      dayRow,
+      ...alertRows,
       status,
       liveRow,
       el("p", { class: "mc-row" }, [el("b", { text: when })]),
@@ -782,10 +881,153 @@
         el("button", { type: "button", class: "mc-btn" + (it.done ? "" : " primary"), text: it.done ? "Undo" : "✓ Rode it", onclick: () => toggleDone(it.id, !it.done) }),
         !it.done && leg.board.ll ? el("button", { type: "button", class: "mc-btn", text: "🚶 Walk", onclick: () => walkTo(it) }) : null,
         canReplan ? el("button", { type: "button", class: "mc-btn" + (live && (live.delay == null || live.delay > 0) ? " warn" : ""), text: "Re-plan", onclick: openReplan }) : null,
+        it.done && trackOn() && items[k + 1] && !items[k + 1].done ? el("button", { type: "button", class: "mc-btn", text: "🚶 Walk to next", onclick: () => walkTo(items[k + 1]) }) : null,
       ]),
     ].filter(Boolean));
     card.hidden = false;
     if (wasHidden) MAP.resize();
+  }
+
+  // ---- Live buses on the map ------------------------------------------------------
+
+  function showVehicles(it, wantLive) {
+    const lv = wantLive ? liveFor(it.leg) : null;
+    const buses = lv && lv.all ? lv.all.filter((v) => v.ll && v.t - Date.now() < 40 * 60000).slice(0, 4) : [];
+    MAP.setVehicles(buses.map((v) => ({
+      ll: v.ll, color: it.color, label: routeCode(it.leg.line),
+      title: it.leg.line + " · at your stop in " + minsAway(v.t),
+    })));
+  }
+
+  // ---- Weekend / holiday warning ---------------------------------------------------
+
+  const DAY_WARN_KEY = "muni-challenge:daywarn";
+  const ymd = (d) => d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+
+  /** Why today's timetable may not match the plan, or null on a normal weekday. */
+  function dayWarning() {
+    const sd = window.MUNI_SERVICE_DAYS;
+    const now = new Date(), d = ymd(now);
+    if (sd && (d < sd.start || d > sd.end)) return "The timetable this plan was built from covers " + sd.start.slice(4, 6) + "/" + sd.start.slice(6) + "–" + sd.end.slice(4, 6) + "/" + sd.end.slice(6) + "; today’s times may differ.";
+    const kind = sd && sd.days[d];
+    if (kind === "reduced holiday-week") return "Muni runs reduced holiday-week service today — some trips in the plan may not run. Lean on live arrivals.";
+    if (kind) return "Today is a holiday: Muni runs a " + kind + " schedule, but the plan uses weekday times.";
+    const wd = now.getDay();
+    if (wd === 0 || wd === 6) return "It’s " + (wd === 6 ? "Saturday" : "Sunday") + ": Muni runs a weekend schedule, but the plan uses weekday times (best on Tue–Thu).";
+    return null;
+  }
+  function dayWarnHidden() {
+    try { return localStorage.getItem(DAY_WARN_KEY) === ymd(new Date()); } catch (e) { return false; }
+  }
+  function hideDayWarn() {
+    try { localStorage.setItem(DAY_WARN_KEY, ymd(new Date())); } catch (e) { /* ignore */ }
+  }
+
+  // ---- Phone features: location all day (ride detection, auto-walk, trail) and leave alerts ----
+
+  const PHONE_KEY = "muni-challenge:phone";
+  const TRAIL_KEY = "muni-challenge:trail";
+  let phone = { track: false, alert: false };
+  try { phone = Object.assign(phone, JSON.parse(localStorage.getItem(PHONE_KEY) || "{}")); } catch (e) { /* ignore */ }
+  let trail = [];
+  try { trail = JSON.parse(localStorage.getItem(TRAIL_KEY) || "[]"); } catch (e) { /* ignore */ }
+  let rideHint = null;   // id of the line you seem to be riding
+  let rideTrack = null;  // { id, s0, t0 } first sighting on that line's route
+  const alerted = {};    // leave alerts already given, by leg + departure
+
+  const trackOn = () => !!phone.track;
+
+  function savePhone() {
+    try { localStorage.setItem(PHONE_KEY, JSON.stringify(phone)); } catch (e) { /* ignore */ }
+  }
+
+  function renderPhoneOpts() {
+    const box = $("phoneOpts");
+    if (!box) return;
+    const opt = (key, label, hint, onchange) => el("label", { class: "opt" }, [
+      el("input", { type: "checkbox", checked: !!phone[key], onchange: (e) => onchange(e.target.checked) }),
+      el("span", { text: label }), el("span", { class: "hint", text: hint }),
+    ]);
+    box.replaceChildren(
+      opt("track", "📍 Use my location all day",
+        "Notices when you’re riding the next line, starts walking directions after each ✓, and draws your trail on the map. Your location stays on this phone (only walking-route requests go to the router).",
+        (on) => { phone.track = on; savePhone(); MAP.watch(on); if (!on) { rideHint = null; rideTrack = null; } renderCard(); }),
+      opt("alert", "🔔 Buzz me when it’s time to leave",
+        "Vibrates and shows a notification ~3 min before you need to set off. On iPhone this works only after Add to Home Screen, and only while the app is open.",
+        async (on) => {
+          phone.alert = on; savePhone();
+          if (on && "Notification" in window && Notification.permission === "default") { try { await Notification.requestPermission(); } catch (e) { /* ignore */ } }
+        }),
+      trail.length > 1 ? el("button", { type: "button", class: "link-btn", text: "Clear my trail (" + trail.length + " points)", onclick: () => { trail = []; saveTrail(); MAP.setTrail(trail); renderPhoneOpts(); } }) : null,
+    );
+  }
+
+  function saveTrail() {
+    try { localStorage.setItem(TRAIL_KEY, JSON.stringify(trail)); } catch (e) { /* full: keep in memory */ }
+  }
+
+  /** Every location fix from the map. */
+  function onPosition(pos) {
+    if (!phone.track) return;
+    // Trail: a point every ~40 m (or after a 2-minute pause), rounded to ~1 m.
+    const last = trail[trail.length - 1];
+    const ll = [Math.round(pos.ll[0] * 1e5) / 1e5, Math.round(pos.ll[1] * 1e5) / 1e5];
+    if (pos.acc < 80 && (!last || meters(last, ll) >= 40)) {
+      trail.push(ll);
+      if (trail.length > 8000) trail.splice(0, trail.length - 8000);
+      saveTrail();
+      MAP.setTrail(trail);
+    }
+    detectRide(pos);
+  }
+
+  /** Along a line's route: distance from it and how far along it you are (metres). */
+  function alongPath(p, path) {
+    const lat0 = p[0] * Math.PI / 180;
+    const xy = (q) => [q[1] * 111320 * Math.cos(lat0), q[0] * 110540];
+    const P = xy(p);
+    let best = { d: Infinity, s: 0 }, run = 0;
+    for (let k = 1; k < path.length; k++) {
+      const A = xy(path[k - 1]), B = xy(path[k]);
+      const dx = B[0] - A[0], dy = B[1] - A[1], len = Math.hypot(dx, dy);
+      const t = Math.max(0, Math.min(1, ((P[0] - A[0]) * dx + (P[1] - A[1]) * dy) / (len * len || 1)));
+      const d = Math.hypot(P[0] - (A[0] + t * dx), P[1] - (A[1] + t * dy));
+      if (d < best.d) best = { d, s: run + t * len };
+      run += len;
+    }
+    return { d: best.d, s: best.s, total: run };
+  }
+
+  // Riding = on the next line's route and moving along it faster than walking pace.
+  function detectRide(pos) {
+    const it = lastItems.find((i) => !i.done && !i.leg.manual);
+    if (!it || !it.path || it.path.length < 2 || pos.acc > 100) return;
+    const a = alongPath(pos.ll, it.path);
+    if (a.d > 70) { rideTrack = null; return; }
+    if (!rideTrack || rideTrack.id !== it.id) { rideTrack = { id: it.id, s0: a.s, t0: pos.at }; return; }
+    const gone = a.s - rideTrack.s0, mins = (pos.at - rideTrack.t0) / 60000;
+    if (rideHint !== it.id && gone > 300 && mins > 0 && gone / mins > 130) {
+      rideHint = it.id;
+      if (navigator.vibrate) navigator.vibrate(120);
+      renderCard();
+    }
+  }
+
+  /** Buzz/notify a few minutes before you need to leave for the next line. */
+  function leaveAlert(info) {
+    if (!phone.alert || !info || info.delay == null || info.delay > 0) return;
+    const key = info.item.id + "@" + info.item.leg.dep_min;
+    if (alerted[key] || info.leaveIn > 3 || info.leaveIn < -2) return;
+    alerted[key] = true;
+    const leg = info.item.leg;
+    const body = (info.walk ? "Start walking (~" + info.walk + " min)" : "Head to the stop") + " for the " + clockMin(info.catchable[0]) + " " + leg.line + ".";
+    if (navigator.vibrate) navigator.vibrate([250, 120, 250]);
+    if ("Notification" in window && Notification.permission === "granted" && navigator.serviceWorker) {
+      navigator.serviceWorker.getRegistration().then((reg) => {
+        if (reg) reg.showNotification("Time to go 🚋", { body, tag: "muni-leave", icon: "icon.svg" });
+        else new Notification("Time to go 🚋", { body });
+      }).catch(() => {});
+    }
   }
 
   function showLeg(id) {
@@ -965,7 +1207,7 @@
     g.fillStyle = "#14161c"; g.fillRect(0, 0, W, H);
 
     // Route drawing, fitted into the lower part of the card.
-    const pts = items.flatMap((i) => i.path || []);
+    const pts = items.flatMap((i) => i.path || []).concat(trail);
     if (pts.length) {
       const lats = pts.map((p) => p[0]), lons = pts.map((p) => p[1]);
       const minLat = Math.min(...lats), maxLat = Math.max(...lats), minLon = Math.min(...lons), maxLon = Math.max(...lons);
@@ -975,6 +1217,13 @@
       const ox = box.x + (box.w - (maxLon - minLon) * kx * sc) / 2, oy = box.y + (box.h - (maxLat - minLat) * sc) / 2;
       const P = (p) => [ox + (p[1] - minLon) * kx * sc, oy + (maxLat - p[0]) * sc];
       g.lineCap = g.lineJoin = "round";
+      if (trail.length > 1) { // where you actually went
+        g.strokeStyle = "rgba(90,169,230,.55)";
+        g.lineWidth = 4;
+        g.beginPath();
+        trail.forEach((p, k) => { const [x, y] = P(p); k && meters(trail[k - 1], p) < 1000 ? g.lineTo(x, y) : g.moveTo(x, y); });
+        g.stroke();
+      }
       for (const pass of [false, true]) {
         for (const it of items) {
           if (!it.path || it.done !== pass) continue;
@@ -1030,8 +1279,10 @@
     const tightest = transfers.reduce((m, i) => Math.min(m, i.leg.wait_min), Infinity);
     const box = $("planCheck");
     box.className = "card " + (long.length ? "warn-card" : "ok-card");
+    const dw = dayWarning();
     box.replaceChildren(
       el("h2", { class: "card-title", text: long.length ? "⚠ Plan check" : "✓ Plan check" }),
+      dw ? el("p", { class: "warn-line", text: "📅 " + dw }) : "",
       el("ul", {}, [
         el("li", { text: "Built from SFMTA’s weekday timetable: first ride " + (day[0] ? day[0].leg.depart : "—") + ", at Bus Stop by ~" + finishAt() + "." }),
         el("li", { text: "Every ride is at least ~3 blocks; longest walk between lines ~" + longest + " m." }),
@@ -1094,8 +1345,11 @@
   WIDE.addEventListener("change", () => MAP.resize());
 
   $("resetBtn").addEventListener("click", () => {
-    if (!confirm("Clear all checked-off lines?")) return;
+    if (!confirm("Clear all checked-off lines (and your trail)?")) return;
     state.done = {};
+    trail = [];
+    saveTrail();
+    MAP.setTrail(trail);
     saveState();
     render();
   });
@@ -1103,6 +1357,7 @@
 
   MAP.init($("map"), {
     onToggle: (id) => toggleDone(id),
+    onPosition,
     onSelect: (id) => { const nx = lastItems.find((i) => !i.done); selectedId = nx && nx.id === id ? null : id; cardSmall = true; setCardSmall(false); MAP.focus(id); },
   });
   // Swipe the card down to fold it, up to open it.
@@ -1124,6 +1379,9 @@
   setView(savedView === "list" ? "list" : "map");
   renderStatic();
   renderLiveKey();
+  renderPhoneOpts();
+  MAP.setTrail(trail);
+  if (phone.track) MAP.watch(true);
   render();
   setInterval(renderLive, 30000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) renderLive(); });

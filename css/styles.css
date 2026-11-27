@@ -251,3 +251,13 @@ a { color: var(--accent); }
 .live-key { display: grid; gap: 4px; margin-top: 10px; }
 .key-form { display: flex; gap: 6px; flex-wrap: wrap; }
 .key-input { flex: 1; min-width: 180px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); font: inherit; font-size: .85rem; }
+.mc-warn { display: flex; align-items: flex-start; gap: 6px; background: var(--risk-bg); color: var(--risk); border-radius: 6px; padding: 3px 4px 3px 8px; font-size: .8rem; }
+.mc-warn span { flex: 1; }
+.mc-x { flex: none; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0 4px; }
+.mc-alert { background: var(--risk-bg); color: var(--risk); border-radius: 6px; padding: 3px 8px; font-size: .8rem; }
+.mc-alert summary { cursor: pointer; font-weight: 600; }
+.mc-alert p { margin: 4px 0 2px; color: var(--ink); }
+.mc-mini-warn { flex: none; color: var(--risk); }
+.bus-dot { min-width: 22px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--c, #333); color: #fff; border: 2px solid #fff; font: 700 10px/14px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.45); z-index: 3; }
+.bus-dot::before { content: "🚌 "; font-size: 9px; }
+.phone-opts { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }

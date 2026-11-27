@@ -10,7 +10,10 @@ A small, no-build web app (MapLibre GL is loaded from a CDN for the map) with th
 - **Walking directions inside the app** (🚶 on any leg, or "Walk here" on the map): a blue dot for you and a dotted street route to the stop, Google-Maps style, with distance, minutes and how much time you have before the bus. Planned transfers are drawn along the streets too.
 - **Interactive map** (MapLibre GL + OpenFreeMap vector tiles, light and dark): every leg numbered and colored by section of the day, with the *whole* of each line drawn faintly underneath so you can see where it goes. Walking transfers are dashed, ridden lines grayed out, the next line highlighted. Tap a section in the legend to show just that part of the day, tap any line or stop to see it in the card, or tap 📍 on a leg to jump to it. Side-by-side on desktop; on phones the map is the main screen, with a List tab.
 - **Map card**: the line you are on, with its times, stops, live status and the next departures if you miss it, plus **✓ Rode it**, **🚶 Walk** and **Re-plan**. Ticking a line off (here or in the list) jumps straight to the next one; ‹ › steps through the day. Swipe it down to fold it to one row.
-- **Live arrivals (optional)**: paste a free [511.org API key](https://511.org/open-data/token) under *Your day* and the card shows real-time predictions for your stop (about one request a minute, within 511's 60-an-hour limit). The key stays in your browser; it is never part of the repo.
+- **Live arrivals (optional)**: paste a free [511.org API key](https://511.org/open-data/token) under *Your day* and the card shows real-time predictions for your stop (about one request a minute, within 511's 60-an-hour limit). The key stays in your browser; it is never part of the repo. With a key, the "on track / behind" status uses the predicted times (e.g. "bus ~6 min late"), **Muni service alerts** for your lines and stops show on the card and in the list (checked every 15 min), and the buses heading to your stop appear on the map.
+- **Holiday and weekend warning**: `js/service-days.js` (from `scripts/service_days.py`) lists the dates the weekday timetable doesn't run; the app warns on those days and on weekends.
+- **Use my location all day (optional)**: notices when you're riding the next line (on its route and faster than walking) and offers ✓ Rode it; after each ✓ it starts walking directions to the next stop; and it draws your trail on the map and in the summary image. The trail stays on the phone. Walking directions keep the screen on.
+- **Buzz me when it's time to leave (optional)**: vibrates and notifies ~3 min before you need to set off (on iPhone, only once added to the Home Screen, and while the app is open).
 - **Check off lines as you ride.** Progress and the time you rode each line are saved in your browser (localStorage). The finish card shows your stats and makes a **shareable summary image** of your day.
 - **Options** for Owl lines (overnight), the 78X (Chase Center event days only) and the 714 BART Early Bird. The line count updates to match: 50 / 51 / 55 / 56.
 - **"Next" highlight** jumps to the first line you haven't ridden.
@@ -51,6 +54,7 @@ pip install numpy
 python scripts/plan.py path/to/muni_gtfs-current.zip --iters 25000 --restarts 4
 python scripts/walks.py                                          # street walking routes (needs internet)
 python scripts/build_network.py path/to/muni_gtfs-current.zip   # whole-line shapes for the map
+python scripts/service_days.py path/to/muni_gtfs-current.zip    # holiday / reduced-service dates
 ```
 
 `plan.py` also writes [`js/replan-data.js`](js/replan-data.js): for each day line, up to 12 stop pairs
